@@ -1,0 +1,8 @@
+# SPDX-License-Identifier: GPL-2.0-only
+config CLK_RTD129X_SCPU
+	tristate "Realtek RTD129x SCPU (CPU) PLL clock"
+	depends on ARCH_REALTEK || COMPILE_TEST
+	depends on MFD_SYSCON
+	help
+	  This enables the CPU PLL clock driver for Realtek RTD129x SoCs,
+	  needed for CPU frequency scaling (cpufreq-dt).

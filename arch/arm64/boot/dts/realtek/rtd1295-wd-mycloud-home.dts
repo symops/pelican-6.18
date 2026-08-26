@@ -1,0 +1,731 @@
+// SPDX-License-Identifier: (GPL-2.0-or-later OR BSD-2-Clause)
+/*
+ * WD My Cloud Home device tree
+ * Based on Realtek RTD1295 SoC
+ *
+ * Ported from kernel 4.9.330 to 6.18.2
+ * Based on third-party Debian device tree from Russian forum
+ * Optimized for Debian/Linux (not Android)
+ */
+
+/dts-v1/;
+
+/*
+ * Protect the USB-rescue-loader's ramdisk staging area (rescue.root.sata.
+ * cpio.gz_pad.img is loaded here, at the fixed address U-Boot's
+ * boot_rescue_from_usb script uses). Matches the vendor rescue DTS
+ * (rtd-1295-monarch-rescue.dts): ROOTFS_RESCUE_START/SIZE from
+ * include/soc/realtek/memory.h. Without this reservation and the
+ * chosen/linux,initrd-* properties below, the kernel never learns the
+ * ramdisk is there at all -- confirmed on real hardware: U-Boot's own FDT
+ * memreserve dump only lists 3 regions without this line (vs. 10 on a
+ * working 4.9.330 rescue boot), and the kernel panics with "Unable to
+ * mount root fs" instead of "Trying to unpack rootfs image as initramfs".
+ */
+/memreserve/ 0x02200000 0x00C00000;
+
+#include "rtd1295.dtsi"
+#include <dt-bindings/thermal/thermal.h>
+#include <dt-bindings/reset/realtek,rtd1295.h>
+
+/ {
+	compatible = "wd,mycloud-home", "realtek,rtd1295";
+	model = "WD My Cloud Home";
+
+	/*
+	 * NOTE: The third-party Debian tree this was derived from reports 1 GiB RAM.
+	 * Do NOT assume 2 GiB unless confirmed on the target device.
+	 *
+	 * Also note: this SoC is ARM64, but the upstream RTD129x DTS uses
+	 * #address-cells = <1> / #size-cells = <1> at the root (32-bit cells).
+	 * That's fine as long as all addresses are below 4 GiB.
+	 */
+	memory@0 {
+		device_type = "memory";
+		reg = <0x0 0x40000000>;
+	};
+
+	aliases {
+		serial0 = &uart0;
+		serial1 = &uart1;
+		serial2 = &uart2;
+		i2c0 = &i2c0;
+		i2c1 = &i2c1;
+	};
+
+	chosen {
+		bootargs = "earlycon=uart8250,mmio32,0x98007800 console=ttyS0,115200 panic=5";
+		stdout-path = "serial0:115200n8";
+		/*
+		 * ROOTFS_RESCUE_START, see the /memreserve/ comment above.
+		 * End is start+4MB, not the full 12MB reservation: the
+		 * USB-rescue loader reads a fixed 4194304-byte block for
+		 * rescue.root.sata.cpio.gz_pad.img regardless of the real
+		 * gzip payload size (matches the working 4.9.330 rescue
+		 * boot log: "Freeing initrd memory: 4096K").
+		 */
+		linux,initrd-start = <0x02200000>;
+		linux,initrd-end = <0x02600000>;
+	};
+
+	/* Reserved memory - clean version without vendor rsvmem-remap overlaps */
+	reserved-memory {
+		#address-cells = <1>;
+		#size-cells = <1>;
+		ranges;
+
+		linux,cma {
+			compatible = "shared-dma-pool";
+			reusable;
+			size = <0x02000000>;
+			linux,cma-default;
+		};
+
+		/* ramoops for kernel crash log persistence */
+		ramoops@22000000 {
+			compatible = "ramoops";
+			reg = <0x22000000 0x200000>;
+			record-size = <0x4000>;
+			console-size = <0x100000>;
+			ftrace-size = <0x4000>;
+		};
+	};
+
+	/* Note: ION memory management is simplified for Debian
+	 * Original Debian version kept minimal ION config for compatibility
+	 * Full ION nodes will be added if needed
+	 */
+};
+
+&rbus {
+	/*
+	 * Vendor RTD129x interrupt mux.
+	 *
+	 * The vendor I2C binding uses two-cell interrupts (<bank line>) with
+	 * interrupt-parent pointing at this mux. The mux itself is chained from
+	 * two GIC SPIs (40 and 41) in the extracted DTS.
+	 */
+	mux_intc: interrupt-controller@1b000 {
+		compatible = "Realtek,rtk-irq-mux";
+		/* v18: enabled. The earlier "stuck ISO_ISR bit2" was a probe
+		 * artifact - the register is a normal W1C event latch (bit0 =
+		 * WRITE_DATA convention, see vendor rtk_iso.h), but every probe
+		 * command itself generated uart traffic that re-latched the bit.
+		 * The real storm cause was printk inside the mux handler feeding
+		 * the console uart; the driver is silent now.
+		 */
+		status = "okay";
+		interrupt-controller;
+		#interrupt-cells = <2>;
+
+		/* v15: full vendor contract for irq-rtd129x.c - two muxes:
+		 * index 0 = MISC @ 0x1b000 (GIC SPI 40), index 1 = ISO @ 0x7000
+		 * (GIC SPI 41). intr-status/intr-en are per-mux register offsets;
+		 * without them the driver reads uninitialized stack values.
+		 */
+		Realtek,mux-nr = <2>;
+		intr-status = <0x0c 0x00>;
+		intr-en = <0x80 0x40>;
+
+		interrupt-parent = <&gic>;
+		interrupts = <GIC_SPI 40 IRQ_TYPE_LEVEL_HIGH>,
+			     <GIC_SPI 41 IRQ_TYPE_LEVEL_HIGH>;
+
+		/* register windows used by the vendor driver */
+		reg = <0x1b000 0x100>, <0x7000 0x100>;
+	};
+
+	/*
+	 * I2C buses (vendor binding: "realtek,rtk-i2c").
+	 */
+	i2c0: i2c@7d00 {
+		compatible = "realtek,rtk-i2c";
+		reg = <0x7d00 0x100>, <0x7000 0x100>;
+		interrupt-parent = <&mux_intc>;
+		interrupts = <1 8>;
+		i2c-num = <0>;
+		status = "okay";
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		pmic@12 {
+			compatible = "gmt,g2227";
+			reg = <0x12>;
+			status = "okay";
+
+			regulators {
+				compatible = "gmt,g2227-regulator";
+				status = "okay";
+
+				dc1 { regulator-boot-on; regulator-always-on; regulator-name = "vd33"; regulator-min-microvolt = <3000000>; regulator-max-microvolt = <3300000>; regulator-initial-mode = <1>; };
+				dc2 { regulator-boot-on; regulator-always-on; regulator-name = "cpudvs"; regulator-min-microvolt = <800000>; regulator-max-microvolt = <1187500>; regulator-initial-mode = <0>; regulator-state-mem { regulator-off-in-suspend; }; };
+				dc3 { regulator-boot-on; regulator-always-on; regulator-name = "gpudvs"; regulator-min-microvolt = <800000>; regulator-max-microvolt = <1187500>; regulator-initial-mode = <0>; regulator-ramp-delay = <625>; regulator-state-mem { regulator-off-in-suspend; }; };
+				dc4 { regulator-boot-on; regulator-always-on; regulator-name = "ddr"; regulator-min-microvolt = <1500000>; regulator-max-microvolt = <1500000>; regulator-initial-mode = <0>; regulator-state-coldboot { regulator-off-in-suspend; }; };
+				dc5 { regulator-boot-on; regulator-always-on; regulator-name = "iso"; regulator-min-microvolt = <800000>; regulator-max-microvolt = <1187500>; regulator-initial-mode = <0>; };
+				dc6 { regulator-boot-on; regulator-always-on; regulator-name = "top"; regulator-min-microvolt = <800000>; regulator-max-microvolt = <1187500>; regulator-initial-mode = <0>; regulator-state-mem { regulator-off-in-suspend; }; };
+				ldo2 { regulator-boot-on; regulator-always-on; regulator-name = "ldo2"; regulator-min-microvolt = <1500000>; regulator-max-microvolt = <1900000>; regulator-initial-mode = <0>; regulator-state-mem { regulator-off-in-suspend; }; };
+				ldo3 { regulator-boot-on; regulator-always-on; regulator-name = "ldo3"; regulator-min-microvolt = <800000>; regulator-max-microvolt = <1200000>; regulator-initial-mode = <0>; regulator-state-mem { regulator-off-in-suspend; }; };
+			};
+		};
+	};
+
+	i2c1: i2c@7c00 {
+		compatible = "realtek,rtk-i2c";
+		reg = <0x7c00 0x100>, <0x7000 0x100>;
+		interrupt-parent = <&mux_intc>;
+		interrupts = <1 11>;
+		i2c-num = <1>;
+		status = "okay";
+		#address-cells = <1>;
+		#size-cells = <0>;
+	};
+
+	i2c2: i2c@1b700 {
+		compatible = "realtek,rtk-i2c";
+		reg = <0x1b700 0x100>, <0x1b00c 0x100>;
+		interrupt-parent = <&mux_intc>;
+		interrupts = <0 26>;
+		i2c-num = <2>;
+		status = "okay";
+		#address-cells = <1>;
+		#size-cells = <0>;
+	};
+
+	i2c3: i2c@1b900 {
+		compatible = "realtek,rtk-i2c";
+		reg = <0x1b900 0x100>, <0x1b00c 0x100>;
+		interrupt-parent = <&mux_intc>;
+		interrupts = <0 23>;
+		i2c-num = <3>;
+		status = "okay";
+		#address-cells = <1>;
+		#size-cells = <0>;
+	};
+
+	i2c4: i2c@1ba00 {
+		compatible = "realtek,rtk-i2c";
+		reg = <0x1ba00 0x100>, <0x1b00c 0x100>;
+		interrupt-parent = <&mux_intc>;
+		interrupts = <0 15>;
+		i2c-num = <4>;
+		status = "disabled";
+		#address-cells = <1>;
+		#size-cells = <0>;
+	};
+
+	i2c5: i2c@1bb00 {
+		compatible = "realtek,rtk-i2c";
+		reg = <0x1bb00 0x100>, <0x1b00c 0x100>;
+		interrupt-parent = <&mux_intc>;
+		interrupts = <0 14>;
+		i2c-num = <5>;
+		status = "okay";
+		#address-cells = <1>;
+		#size-cells = <0>;
+	};
+
+	/*
+	 * SATA PHY + AHCI controller.
+	 * PHY driver: drivers/phy/realtek/phy-rtk-sata.c (mainline)
+	 * AHCI reg shrunk to 0xf00 to avoid overlap with PHY at 0x3ff00.
+	 */
+	sata_phy: sata-phy@3ff00 {
+		compatible = "Realtek,rtk-sata-phy";
+		reg = <0x3ff00 0x100>, <0x1a980 0x10>;
+		#address-cells = <1>;
+		#size-cells = <0>;
+		#phy-cells = <1>;
+		status = "okay";
+
+		sata-phy@0 {
+			reg = <0>;
+			spread-spectrum = <0>;
+
+			/*
+			 * Monarch (WD My Cloud Home) board-specific PHY
+			 * calibration, copied verbatim from the vendor
+			 * rtd-1295-monarch-1GB.dts (sata_phy@9803FF60).
+			 * The mainline driver's built-in defaults are for a
+			 * different reference board and leave the link dead
+			 * (SStatus 0, no OOB signaling at all) on this unit.
+			 */
+			phy-param = <0x00001111>, <0x00005111>, <0x00009111>,
+				    <0x336a0511>, <0x336a4511>, <0x336a8511>,
+				    <0xE0700111>, <0xE05C4111>, <0xE04A8111>,
+				    <0x00150611>, <0x00154611>, <0x00158611>,
+				    <0xC6000A11>, <0xC6004A11>, <0xC6008A11>,
+				    <0x70000211>, <0x70004211>, <0x70008211>,
+				    <0xC6600A11>, <0xC6604A11>, <0xC6608A11>,
+				    <0x20041911>, <0x20045911>, <0x20049911>,
+				    <0x94aa2011>, <0x94aa6011>, <0x94aaa011>,
+				    <0x17171511>, <0x17175511>, <0x17179511>,
+				    <0x07701611>, <0x07705611>, <0x07709611>,
+				    <0x00002a11>, <0x00006a11>, <0x0000aa11>,
+				    <0x27710311>, <0x27684311>, <0x27648311>,
+				    <0x29001011>, <0x29005011>, <0x29009011>,
+				    <0xc0000C11>, <0xc0004C11>, <0xc0008C11>,
+				    <0x00271711>, <0x00275711>, <0x00279711>;
+
+			tx-driving-tbl = <0x94a72011>, <0x94a76011>, <0x94a7a011>,
+					  <0x487a2111>, <0x487a6111>, <0x487aa111>;
+
+			rx-sense-tbl = <0x72100911>, <0x72104911>, <0x72108911>,
+					<0x27750311>, <0x276e4311>, <0x276c8311>;
+		};
+	};
+
+	sata@3f000 {
+		compatible = "realtek,rtd1295-ahci";
+		reg = <0x3f000 0xf00>;
+		interrupts = <GIC_SPI 28 IRQ_TYPE_LEVEL_HIGH>;
+		phys = <&sata_phy 0>;
+		phy-names = "sata-phy";
+		status = "okay";
+	};
+
+	/*
+	 * GMAC — RTD1295 SoC-internal Gigabit Ethernet.
+	 * Uses vendor platform driver r8169soc (compatible "Realtek,r8168").
+	 *
+	 * Two register ranges, both RBUS-relative:
+	 *   0x16000  1K  — MAC registers        (absolute 0x98016000)
+	 *   0x7000   1K  — ISO domain registers (absolute 0x98007000)
+	 *
+	 * The driver uses mmio_clkaddr (range 1) for clock-gate and reset
+	 * control of the ETN block.  No RTD1295 clock driver exists in
+	 * mainline 6.18, so clocks are declared as optional in r8169soc.c
+	 * (hardware clocks remain enabled from the vendor bootloader at
+	 * kexec time).
+	 *
+	 * output-mode = 0 → embedded PHY (RGMII internal).
+	 * mac-version  = 0x2a → RTL8168H embedded MAC.
+	 */
+	/*
+	 * v19: USB. RTD1295 has three dwc3 blocks; the WD My Cloud Home's
+	 * rear USB-A port is served by the u2host block (vendor-enabled) and
+	 * u3host (vendor-disabled but SS-wired). DRD (vendor: adb gadget) is
+	 * left out. PHYs are the mainline realtek phy-rtk-usb2/usb3 drivers;
+	 * their reg windows live inside the vendor dwc3 wrapper regions.
+	 * Resets are the 9 lines the vendor usb-manager deasserts, as shared
+	 * arrays so both controllers can list the common ones. clk_en_usb
+	 * (CRT 0x0c bit 4) and the VBUS gpio (misc-gpio 19) are poked from
+	 * the initramfs - no mainline clk/needed-gpio wiring yet.
+	 */
+	usb2phy_u2: usb-phy@13c14 {
+		compatible = "realtek,rtd1295-usb2phy";
+		reg = <0x13c14 0x4>, <0x31280 0x4>;
+		#phy-cells = <0>;
+	};
+
+	usb2phy_u3: usb-phy@13e14 {
+		compatible = "realtek,rtd1295-usb2phy";
+		reg = <0x13e14 0x4>, <0x1f8280 0x4>;
+		#phy-cells = <0>;
+	};
+
+	usb3phy_u3: usb-phy@13e10 {
+		compatible = "realtek,rtd1295-usb3phy";
+		reg = <0x13e10 0x4>;
+		#phy-cells = <0>;
+	};
+
+	/* v42: on-die thermal sensor (scpu_wrapper block) */
+	soc_thermal: thermal-sensor@1d150 {
+		compatible = "realtek,rtd129x-thermal-sensor";
+		reg = <0x1d150 0x20>;
+		#thermal-sensor-cells = <0>;
+	};
+
+	usb2phy_drd: usb-phy@13214 {
+		compatible = "realtek,rtd1295-usb2phy";
+		reg = <0x13214 0x4>, <0x28280 0x4>;
+		#phy-cells = <0>;
+	};
+
+	usb3phy_drd: usb-phy@13210 {
+		compatible = "realtek,rtd1295-usb3phy";
+		reg = <0x13210 0x4>;
+		#phy-cells = <0>;
+	};
+
+	usb_wrap_drd: usb@13200 {
+		/* v21: the DRD block drives the physical USB-A port on this box
+		 * (vendor ran it as an adb gadget and role-switched in software;
+		 * u3host is unwired). Run it as a plain host.
+		 */
+		compatible = "realtek,rtd1295-dwc3", "realtek,rtd-dwc3";
+		reg = <0x13200 0x200>;
+		#address-cells = <1>;
+		#size-cells = <1>;
+		ranges;
+
+		usb_drd: usb@20000 {
+			compatible = "snps,dwc3";
+			reg = <0x20000 0x9000>;
+			interrupts = <GIC_SPI 21 IRQ_TYPE_LEVEL_HIGH>;
+			phys = <&usb2phy_drd>, <&usb3phy_drd>;
+			phy-names = "usb2-phy", "usb3-phy";
+			dr_mode = "host";
+			snps,dis_u2_susphy_quirk;
+			snps,dis_ss_park_mode;
+			resets = <&reset1 RTD1295_RSTN_USB>,
+				 <&reset1 RTD1295_RSTN_USB_PHY0>,
+				 <&reset1 RTD1295_RSTN_USB3_PHY0_POW>,
+				 <&reset1 RTD1295_RSTN_USB3_P0_MDIO>;
+		};
+	};
+
+	usb_wrap_u2host: usb@13c00 {
+		/* v20: mainline dwc3-rtk glue wrapper. The parent compatible
+		 * "realtek,rtd-dwc3" also makes dwc3 core use the RTD globals
+		 * offset 0x8100 instead of 0xc100 (the v39 -EBUSY failure).
+		 */
+		compatible = "realtek,rtd1295-dwc3", "realtek,rtd-dwc3";
+		reg = <0x13c00 0x200>;
+		#address-cells = <1>;
+		#size-cells = <1>;
+		ranges;
+
+		usb_u2host: usb@29000 {
+			compatible = "snps,dwc3";
+			reg = <0x29000 0x9000>;
+			interrupts = <GIC_SPI 21 IRQ_TYPE_LEVEL_HIGH>;
+			phys = <&usb2phy_u2>;
+			phy-names = "usb2-phy";
+			dr_mode = "host";
+			snps,dis_u2_susphy_quirk;
+			resets = <&reset1 RTD1295_RSTN_USB>,
+				 <&reset1 RTD1295_RSTN_USB_PHY0>,
+				 <&reset1 RTD1295_RSTN_USB_PHY1>,
+				 <&reset2 RTD1295_RSTN_USB_PHY2>,
+				 <&reset2 RTD1295_RSTN_USB_PHY3>;
+		};
+	};
+
+	usb_wrap_u3host: usb@13e00 {
+		compatible = "realtek,rtd1295-dwc3", "realtek,rtd-dwc3";
+		reg = <0x13e00 0x200>;
+		#address-cells = <1>;
+		#size-cells = <1>;
+		ranges;
+
+		usb_u3host: usb@1f0000 {
+			compatible = "snps,dwc3";
+			reg = <0x1f0000 0x9000>;
+			interrupts = <GIC_SPI 21 IRQ_TYPE_LEVEL_HIGH>;
+			phys = <&usb2phy_u3>, <&usb3phy_u3>;
+			phy-names = "usb2-phy", "usb3-phy";
+			dr_mode = "host";
+			snps,dis_u2_susphy_quirk;
+			snps,dis_ss_park_mode;
+			resets = <&reset1 RTD1295_RSTN_USB>,
+				 <&reset1 RTD1295_RSTN_USB3_PHY0_POW>,
+				 <&reset1 RTD1295_RSTN_USB3_P0_MDIO>,
+				 <&reset2 4>,
+				 <&reset2 RTD1295_RSTN_USB3_P1_MDIO>;
+		};
+	};
+
+	gmac: ethernet@16000 {
+		compatible = "Realtek,r8168";
+		reg = <0x16000 0x1000>, <0x7000 0x1000>;
+		interrupt-parent = <&gic>;
+		interrupts = <GIC_SPI 22 IRQ_TYPE_LEVEL_HIGH>;
+		resets = <&iso_reset RTD1295_ISO_RSTN_GMAC>,
+			 <&iso_reset RTD1295_ISO_RSTN_GPHY>;
+		reset-names = "gmac", "gphy";
+		output-mode = <0>;
+		mac-version = <0x2a>;
+		ext-phy-id = <1>;
+		led-cfg = <0x804f>;
+		rtl-config = <1>;
+		rtl-features = <2>;
+		eee = <1>;
+		rgmii-voltage = <1>;
+		rgmii-tx-delay = <0>;
+		rgmii-rx-delay = <0>;
+		status = "okay";
+	};
+
+	/*
+	 * SPI-NOR flash controller (SFC). Single fixed chip, no child
+	 * nodes -- matches the vendor DTS (sfc@9801a800). This is the
+	 * same 1MB boot SPI-NOR that holds the FSBL; mtd0 offset 0 is the
+	 * vendor's dedicated RTC timestamp scratch area (see rtc-rtk.c /
+	 * the WD-RTC driver below), verified safe on real hardware before
+	 * porting (confirmed valid {seconds, ~seconds} pair already there,
+	 * not FSBL data).
+	 */
+	sfc: sfc@1a800 {
+		compatible = "realtek,rtk-sfc";
+		reg = <0x1a800 0x50>;
+		status = "okay";
+	};
+};
+
+&uart0 {
+	/* v18: IRQ via ISO mux (index 1, status bit 2). interrupts-st-mask
+	 * matches the vendor DT; mainline 8250 ignores it (the mux driver
+	 * acks the latch instead).
+	 */
+	interrupt-parent = <&mux_intc>;
+	interrupts = <1 2>;
+	interrupts-st-mask = <0x4>;
+	status = "okay";
+};
+
+&uart1 {
+	status = "disabled";
+};
+
+&uart2 {
+	status = "disabled";
+};
+
+/* v17: spin-table restored. smp_spin_table.c now detects a non-memory
+ * release address and uses the vendor access pattern (plain ioremap +
+ * 32-bit writel + sev) instead of ioremap_cache + writeq + dcache
+ * maintenance, which hard-hung the interconnect (the v23 failure).
+ */
+&cpu0 {
+	enable-method = "spin-table";
+	cpu-release-addr = <0x0 0x9801aa44>;
+};
+
+&cpu1 {
+	enable-method = "spin-table";
+	cpu-release-addr = <0x0 0x9801aa44>;
+};
+
+&cpu2 {
+	enable-method = "spin-table";
+	cpu-release-addr = <0x0 0x9801aa44>;
+};
+
+&cpu3 {
+	enable-method = "spin-table";
+	cpu-release-addr = <0x0 0x9801aa44>;
+};
+
+
+/*
+ * Vendor 4.9 uses a Realtek-specific "rtk-spin-table" CPU bring-up path.
+ * Mainline arm64 doesn't know that cpu_ops name, but it does support the
+ * generic spin-table protocol, which uses the same release address polling
+ * model for secondaries.
+ */
+
+
+
+
+/* TODO: Port I2C controllers from extracted.dts
+ * - i2c@0x98007D00 (I2C0) with PMIC g2227@12
+ * - i2c@0x98007C00 (I2C1)
+ * - i2c@0x9801B700 (I2C2)
+ * - i2c@0x9801B900 (I2C3)
+ * - i2c@0x9801BA00 (I2C4)
+ * - i2c@0x9801BB00 (I2C5)
+ */
+
+/* TODO: Port USB controllers
+ * - dwc3_drd_usb2phy
+ * - dwc3_drd_usb3phy
+ * - rtk_dwc3_drd
+ * - rtk_dwc3_u2host
+ */
+
+/* TODO: Port SATA controller
+ * - sata_phy@9803FF60
+ * - sata@9803F000
+ */
+
+/*
+ * The GMAC node goes inside &rbus (both reg ranges are RBUS-relative).
+ * See note below the &rbus block for details.
+ */
+
+/* TODO: Port GPIO and pinctrl
+ * - pinctrl@9801A000
+ * - rtk_iso_gpio@98007100
+ * - rtk_misc_gpio@9801b100
+ */
+
+/* TODO: Port power management
+ * - power-management@0
+ * - cpu-dvfs
+ */
+
+/* TODO: Port thermal zones
+ * - thermal-zones
+ */
+
+/ {
+	thermal-zones {
+		soc-thermal {
+			polling-delay-passive = <250>;
+			polling-delay = <10000>;
+			thermal-sensors = <&soc_thermal>;
+
+			trips {
+				soc_hot: soc-hot {
+					temperature = <85000>;
+					hysteresis = <5000>;
+					type = "passive";
+				};
+
+				soc-crit {
+					temperature = <105000>;
+					hysteresis = <2000>;
+					type = "critical";
+				};
+			};
+
+			cooling-maps {
+				map0 {
+					trip = <&soc_hot>;
+					cooling-device = <&cpu0 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
+							 <&cpu1 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
+							 <&cpu2 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
+							 <&cpu3 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
+				};
+			};
+		};
+	};
+};
+
+&iso {
+	pwm: pwm@d0 {
+		compatible = "realtek,rtd129x-pwm";
+		reg = <0xd0 0xc>;
+		clocks = <&osc27M>;
+		#pwm-cells = <2>;
+	};
+
+	/*
+	 * The RTD1295 hardware RTC counter at this offset has no battery
+	 * backup on this board and free-runs from an arbitrary reset value
+	 * -- useless for keeping actual time across a power cycle (this is
+	 * why mainline's rtc-rtd119x.c, which drives it directly, always
+	 * reports 2014-01-01 after boot on this device). The vendor
+	 * firmware never actually uses it either: it persists the clock in
+	 * SPI-NOR flash instead (see &sfc and drivers/rtc/rtc-wd-mch-
+	 * flash.c). This node is intentionally left unbound; no driver
+	 * claims "realtek,rtd1295-rtc" here.
+	 */
+
+	rtc0: rtc {
+		compatible = "wd,mycloud-home-rtc";
+		status = "okay";
+	};
+};
+
+/*
+ * The poweroff driver maps the RPC common region uncached (as the vendor
+ * kernel did); no-map keeps it out of the linear map so ioremap allows it.
+ */
+&rpc_comm {
+	no-map;
+};
+
+/ {
+	leds {
+		compatible = "pwm-leds";
+
+		/*
+		 * Front SYS LED, PWM channel 3. "keep" turned out to be the
+		 * wrong default: the raw pre-driver hardware state here is
+		 * just reset/BootROM leftovers (ocd=255 csd=15 cd=127 ->
+		 * ~1.6 Hz, visibly flickering), not something meaningful the
+		 * boot loader configured -- the vendor's own driver
+		 * unconditionally reprograms all 4 channels at probe
+		 * regardless of what it finds. Its logged defaults for this
+		 * channel (clksrc_div=1 clkout_div=255 duty_rate=10,
+		 * ~26367 Hz) are the actual known-good operating point;
+		 * default-brightness=26 (~10% of 255) reproduces that duty
+		 * cycle through this driver's apply().
+		 */
+		led-sys {
+			label = "white:sys";
+			pwms = <&pwm 3 37926>;
+			max-brightness = <255>;
+			default-state = "on";
+			default-brightness = <26>;
+		};
+	};
+};
+
+/ {
+	poweroff {
+		compatible = "realtek,rtd129x-coolboot-poweroff";
+		memory-region = <&rpc_comm>;
+	};
+};
+
+&crt {
+	/*
+	 * No "reg" here: the two registers this clock touches (divider at
+	 * CRT offset 0x030, PLL/SSC1 control at 0x500+) are far apart in
+	 * the same block, so the driver reaches both through &crt's own
+	 * syscon regmap instead of owning a private MMIO sub-window.
+	 */
+	scpu_clk: clock-controller {
+		compatible = "realtek,rtd129x-scpu-clk";
+		clocks = <&osc27M>;
+		#clock-cells = <0>;
+	};
+};
+
+/*
+ * cpufreq: divider-only scaling below the boot operating point.  The
+ * boot loader leaves PLL_SCPU at 1201.5 MHz with the post-divider at
+ * /2, so this board has always run at 600.75 MHz; the OPPs are that
+ * proven point and its half.  No opp-microvolt on purpose: the cpudvs
+ * rail is never touched, both OPPs are safe at whatever voltage the
+ * board booted with.
+ */
+&cpu0 {
+	clocks = <&scpu_clk>;
+	#cooling-cells = <2>;
+	operating-points-v2 = <&cpu_opps>;
+};
+
+&cpu1 {
+	clocks = <&scpu_clk>;
+	#cooling-cells = <2>;
+	operating-points-v2 = <&cpu_opps>;
+};
+
+&cpu2 {
+	clocks = <&scpu_clk>;
+	#cooling-cells = <2>;
+	operating-points-v2 = <&cpu_opps>;
+};
+
+&cpu3 {
+	clocks = <&scpu_clk>;
+	#cooling-cells = <2>;
+	operating-points-v2 = <&cpu_opps>;
+};
+
+/ {
+	cpu_opps: opp-table-cpu {
+		compatible = "operating-points-v2";
+		opp-shared;
+
+		opp-300375000 {
+			opp-hz = /bits/ 64 <300375000>;
+			clock-latency-ns = <150000>;
+		};
+
+		opp-600750000 {
+			opp-hz = /bits/ 64 <600750000>;
+			clock-latency-ns = <150000>;
+			opp-suspend;
+		};
+
+		opp-1100000000 {
+			opp-hz = /bits/ 64 <1100000000>;
+			clock-latency-ns = <300000>;
+		};
+	};
+};

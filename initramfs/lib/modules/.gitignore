@@ -1,0 +1,5 @@
+# phy-rtk-sata.ko / usb-storage.ko / uas.ko are build artifacts, tied to the
+# exact kernel version (vermagic must match exactly or insmod rejects them).
+# Never commit them -- run tools/monarch/sync-storage-modules.sh after every
+# `make modules` to refresh them here instead.
+*.ko

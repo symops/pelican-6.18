@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: GPL-2.0-only
+menu "Realtek SoC drivers"
+
+config RTK_RSVMEM_REMAP
+	bool "Realtek reserved-memory remap helper (vendor)"
+	depends on OF_RESERVED_MEM
+	help
+	  Vendor helper for reserved-memory nodes with:
+	    compatible = "rsvmem-remap"
+	    save_remap_name = "rbus" | "common" | "ringbuf"
+
+	  It ioremaps the reserved region early and stores the mapping for
+	  other vendor drivers to use.
+
+endmenu
+
+

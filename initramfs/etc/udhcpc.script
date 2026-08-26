@@ -1,0 +1,17 @@
+#!/bin/sh
+# Minimal busybox udhcpc handler for the rescue network.
+case "$1" in
+deconfig)
+	ip addr flush dev "$interface" 2>/dev/null
+	ip link set "$interface" up
+	;;
+bound|renew)
+	ip addr flush dev "$interface" 2>/dev/null
+	ip addr add "$ip/${mask:-24}" dev "$interface"
+	ip link set "$interface" up
+	[ -n "$router" ] && ip route add default via "${router%% *}" dev "$interface" 2>/dev/null
+	: > /etc/resolv.conf
+	for s in $dns; do echo "nameserver $s" >> /etc/resolv.conf; done
+	;;
+esac
+exit 0
