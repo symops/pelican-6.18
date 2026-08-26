@@ -121,14 +121,21 @@ static const unsigned int SSCDIS_SET_TABLE[] = {
  * The mainline phy framework calls phy_init() before phy_power_on() (see
  * ahci_platform_enable_phys()), but phy_rtk_sata_init() below does all
  * its MDIO_CTR programming -- this gate needs to already be open by
- * then, not just by the time power_on() runs afterwards. Confirmed on
- * real WD My Cloud Home Duo hardware where this gate isn't pre-opened by
- * the bootloader (unlike the single-bay Monarch board, where it already
- * was, which is why this wasn't caught there): every one of the ~63
- * MDIO_CTR writes phy_rtk_sata_init() makes per PHY timed out and logged
- * "mdio busy" (ignored -- see write_mdio_reg()), stretching each PHY's
- * init to ~3.3s, and the AHCI controller reset that follows failed
- * outright with the same poison value.
+ * then, not just by the time power_on() runs afterwards. This driver is
+ * shared, byte-for-byte identical, between two board ports:
+ * symops/pelican-6.18 (WD My Cloud Home Duo, dual-bay, RTD1296) and
+ * symops/monarch-6.18 (WD My Cloud Home, single-bay, RTD1295) --
+ * matching the vendor 4.9.330 source's non-RTD129X chip_id path, which
+ * calls this same gate-open unconditionally from both .init() and
+ * .power_on() too. Whether the call in .init() actually does anything
+ * depends on the bootloader: confirmed on real Duo hardware, where this
+ * gate is NOT pre-opened, that skipping it here is fatal -- every one of
+ * the ~63 MDIO_CTR writes phy_rtk_sata_init() makes per PHY times out
+ * and logs "mdio busy" (ignored -- see write_mdio_reg()), stretching
+ * each PHY's init to ~3.3s, and the AHCI controller reset that follows
+ * fails outright with the same poison value. On Monarch the bootloader
+ * already opens this gate, so the call in .init() is a no-op there in
+ * practice -- kept anyway for the two ports' correctness and parity.
  */
 static void phy_rtk_sata_sb2_gate_open(struct phy_rtk_priv *priv, unsigned int index)
 {
