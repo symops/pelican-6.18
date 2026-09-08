@@ -51,6 +51,8 @@
 /memreserve/ 0x02200000 0x00C00000;
 
 #include "rtd1296.dtsi"
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/input/input.h>
 #include <dt-bindings/thermal/thermal.h>
 #include <dt-bindings/reset/realtek,rtd1295.h>
 
@@ -218,6 +220,71 @@
 		status = "okay";
 		#address-cells = <1>;
 		#size-cells = <0>;
+	};
+
+	/*
+	 * ISO_GPIO block -- mainline drivers/gpio/gpio-rtd.c
+	 * ("realtek,rtd1295-iso-gpio"), never previously instantiated
+	 * anywhere in this port (neither here nor in Monarch's DTS -- both
+	 * only carried a stale "TODO: Port GPIO and pinctrl" comment). Added
+	 * now specifically to expose the Reset button (see below); nothing
+	 * else on this board needs it yet.
+	 *
+	 * `reg` order is [0]=GPIO data/control registers, [1]=GPIO interrupt
+	 * (assert/deassert status) registers -- confirmed against the
+	 * driver's own upstream binding
+	 * (Documentation/devicetree/bindings/gpio/realtek,rtd-gpio.yaml
+	 * example: "reg: [0] GPIO controller registers, [1] GPIO interrupt
+	 * registers") and cross-checked against this file's own
+	 * already-hardware-confirmed RTD_MISC_GPIO_DIR/DATO offsets in
+	 * ahci_rtd1295.c (dir=+0x0, dato=+0x10 relative to 0x9801b100, the
+	 * *second* of the vendor DTS's two misc_gpio reg entries) -- i.e.
+	 * this order is the reverse of how the vendor's own (differently
+	 * structured) DTS lists the same two physical blocks. ISO_GPIO is
+	 * 0x98007100 (rbus-relative 0x7100) / ISO_SYS is 0x98007000
+	 * (rbus-relative 0x7000), same pairing as the vendor's own
+	 * rtk_iso_gpio@98007100 node in rtd-1296.dtsi.
+	 *
+	 * interrupts: same &mux_intc bank/bit pair as the vendor's own
+	 * rtk_iso_gpio node (interrupt-parent = <&mux_intc>; interrupts =
+	 * <1 19>, <1 20>; in rtd-1296.dtsi) -- GPIOA_INT (assert) then
+	 * GPIODA_INT (deassert), mux bank 1 (same bank i2c0/i2c1 above use).
+	 *
+	 * No pinctrl driver exists in this port yet (same stale TODO as
+	 * above), so gpio-ranges -- required by the binding -- is omitted;
+	 * these 35 ISO GPIO lines default to GPIO mode with no pinmux group
+	 * needed (same reasoning already applied to the LED GPIOs in
+	 * ahci_rtd1295.c/rtd1295-wd-mycloud-home.dts's pwm-leds). This is a
+	 * schema violation `make dtbs_check` would flag, not something
+	 * `make dtbs` itself checks.
+	 *
+	 * reg[1] (the ISO_SYS/interrupt-status block) is intentionally only
+	 * 0x10 bytes, not the vendor's full 0x100-byte page: that page is
+	 * shared with other, already-working peripherals at unrelated byte
+	 * offsets within it -- &pwm at +0xd0 (rtd129x-pwm, this board's SYS
+	 * LED and fan) and a simple-reset controller at +0x88 -- and
+	 * devm_platform_ioremap_resource() reserves a reg entry's *entire*
+	 * declared size exclusively via request_mem_region(), regardless of
+	 * which bytes gpio-rtd.c actually touches. Declaring the vendor's
+	 * full 0x100 here claimed that whole page and broke both of those
+	 * drivers with "-EBUSY: can't request region" on real hardware
+	 * (confirmed: SYS LED and fan both stopped working). 0x10 bytes
+	 * covers only the registers gpio-rtd.c's rtd1295_iso_gpio_info
+	 * actually needs for GPIO 22 (gpa_offset[0]=0x8, gpda_offset[0]=0xc
+	 * -- the first status bank, GPIOs 0-30): far short of +0x88/+0xd0,
+	 * so no more overlap. A future consumer needing local GPIO >=30 on
+	 * this chip (bank 1, gpa/gpda at +0xe0/+0xe4) would need a wider
+	 * window and would have to solve this same page-sharing conflict
+	 * again; out of scope for this button.
+	 */
+	rtk_iso_gpio: gpio@7100 {
+		compatible = "realtek,rtd1295-iso-gpio";
+		reg = <0x7100 0x100>, <0x7000 0x10>;
+		interrupt-parent = <&mux_intc>;
+		interrupts = <1 19>, <1 20>;
+		gpio-controller;
+		#gpio-cells = <2>;
+		status = "okay";
 	};
 
 	/*
@@ -753,6 +820,61 @@
 		cooling-max-state = <2>;
 		#cooling-cells = <2>;
 		cooling-levels = <0 51 128>;
+	};
+
+	/*
+	 * Reset button. Unlike symops/MCG1-6.18's board (LS1024A, GPIO_2,
+	 * cross-confirmed against two separate vendor sources -- both
+	 * barebox's commands/wd_button.c and the vendor kernel's
+	 * drivers/input/misc/btn-wd.c read the exact same bit), the RTD1296
+	 * vendor 4.9.330 tree has no dedicated button driver of its own at
+	 * all -- confirmed by grepping drivers/input/misc/ for anything
+	 * WD-specific there. The only trace of this button anywhere in the
+	 * GPL source drop is the generic "Realtek,power-management"
+	 * wakeup-gpio-list node in the vendor's rtd-1296-pelican-1GB.dts,
+	 * which turned out to be the WRONG lead: it lists two candidate
+	 * wakeup GPIOs on &rtk_iso_gpio (14 disabled, 22 enabled), and 22
+	 * -- the only enabled one, the seemingly obvious guess -- does
+	 * NOT move on a real button press (confirmed on real hardware with
+	 * this node wired to it: gpio-keys registered fine, but evtest
+	 * showed zero events, and /sys/kernel/debug/gpio confirmed the line
+	 * genuinely never changes state while holding the button).
+	 *
+	 * Found the real line empirically instead, with no kernel rebuild
+	 * needed: `gpioget -c gpiochip0 0 1 2 ... 34` (skipping 22, held
+	 * busy by this very node) run once unpressed and once with the
+	 * button held, diffing the two 34-value dumps. Exactly one line
+	 * changed, active -> inactive, between the two reads: **GPIO 20**.
+	 * Everything else (all 33 other lines) read identically both times
+	 * -- about as clean a positive identification as this kind of
+	 * black-box probing gets. GPIO 14, the vendor's other, disabled
+	 * wakeup-gpio-list candidate, was never actually tested since 20
+	 * already gave an unambiguous answer.
+	 *
+	 * Real IRQ, not polling: unlike LS1024A (no GPIO irqchip anywhere,
+	 * vendor or mainline, forcing MCG1 to gpio-keys-polled), this SoC's
+	 * &mux_intc + drivers/gpio/gpio-rtd.c combination is already proven
+	 * on real Duo hardware for i2c0-i2c5 above, so a plain interrupt-
+	 * driven "gpio-keys" node works here with no driver changes needed.
+	 * (The gpiochip_enable_irq() WARN seen with the wrong-GPIO version
+	 * of this node was a red herring, not a real bug: real hardware
+	 * confirmed via /sys/kernel/debug/gpio that direction was correctly
+	 * "in" the whole time -- the actual problem was always the GPIO
+	 * number, not the IRQ plumbing.)
+	 *
+	 * KEY_PROG1 rather than KEY_RESTART, same reasoning and same real-
+	 * hardware finding as MCG1's button node: KEY_RESTART gets treated
+	 * as a genuine reboot request by systemd-logind on its own, with
+	 * nothing of ours asking for that.
+	 */
+	gpio_keys: gpio-keys {
+		compatible = "gpio-keys";
+
+		button-reset {
+			label = "Reset";
+			linux,code = <KEY_PROG1>;
+			gpios = <&rtk_iso_gpio 20 GPIO_ACTIVE_LOW>;
+		};
 	};
 };
 
