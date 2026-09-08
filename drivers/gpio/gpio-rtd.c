@@ -514,11 +514,49 @@ static int rtd_gpio_irq_set_type(struct irq_data *d, unsigned int type)
 	return 0;
 }
 
+/*
+ * IRQCHIP_IMMUTABLE chips are, by design, never touched by gpiolib's own
+ * gpiochip_set_irq_hooks() -- that function returns immediately for any
+ * chip with this flag set (see its very first check), which means it is
+ * this driver's job, not the core's, to wire up .irq_request_resources/
+ * .irq_release_resources so that gpiochip_lock_as_irq() actually runs and
+ * marks the line GPIOD_FLAG_USED_AS_IRQ. Without these two callbacks (as
+ * this driver shipped originally), that flag is never set, and every
+ * later gpiochip_enable_irq() call -- reached on the very first real IRQ
+ * user, e.g. a "gpio-keys" button node requesting its line -- trips
+ * WARN_ON(!test_bit(GPIOD_FLAG_USED_AS_IRQ, ...)) at gpiolib.c:4112.
+ * Confirmed on real WD My Cloud Home Duo hardware: this warning fired on
+ * every boot once a gpio-keys consumer was wired to this chip for the
+ * first time (see symops/pelican-6.18's rtd1296-wd-mycloud-home-duo.dts
+ * Reset button node) -- purely cosmetic (the actual hardware IRQ enable
+ * happens via a direct register write in rtd_gpio_enable_irq() below,
+ * independent of this bookkeeping flag, which is why the button worked
+ * correctly via evtest despite the warning), but a real, fixable gap in
+ * this driver rather than anything board-specific. Same pattern used by
+ * every other IRQCHIP_IMMUTABLE gpio driver in this tree (e.g.
+ * gpio-mt7621.c's mt7621_gpio_irq_reqres()/_relres()).
+ */
+static int rtd_gpio_irq_reqres(struct irq_data *d)
+{
+	struct gpio_chip *gc = irq_data_get_irq_chip_data(d);
+
+	return gpiochip_reqres_irq(gc, irqd_to_hwirq(d));
+}
+
+static void rtd_gpio_irq_relres(struct irq_data *d)
+{
+	struct gpio_chip *gc = irq_data_get_irq_chip_data(d);
+
+	gpiochip_relres_irq(gc, irqd_to_hwirq(d));
+}
+
 static const struct irq_chip rtd_gpio_irq_chip = {
 	.name = "rtd-gpio",
 	.irq_enable = rtd_gpio_enable_irq,
 	.irq_disable = rtd_gpio_disable_irq,
 	.irq_set_type = rtd_gpio_irq_set_type,
+	.irq_request_resources = rtd_gpio_irq_reqres,
+	.irq_release_resources = rtd_gpio_irq_relres,
 	.flags = IRQCHIP_IMMUTABLE,
 };
 
