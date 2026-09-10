@@ -97,9 +97,6 @@ static void wdmc_poweroff_handler(void)
 	unsigned int i;
 	u32 val;
 
-	pr_emerg("wdmc-poweroff: handler entered (%s)\n",
-		 wdmc_poweroff ? "data present" : "data NULL, bailing out");
-
 	if (!wdmc_poweroff)
 		return;
 
@@ -109,9 +106,6 @@ static void wdmc_poweroff_handler(void)
 		val = readl(wdmc_poweroff->pwm_base + WDMC_PWM_OCD);
 		val &= ~(0xffU << shift);
 		writel(val, wdmc_poweroff->pwm_base + WDMC_PWM_OCD);
-		pr_emerg("wdmc-poweroff: pwm channel %u off (ocd now 0x%08x)\n",
-			 wdmc_poweroff->pwm_channels[i],
-			 readl(wdmc_poweroff->pwm_base + WDMC_PWM_OCD));
 	}
 
 	if (wdmc_poweroff->misc_gpio_dir && wdmc_poweroff->misc_gpio_dato) {
@@ -127,7 +121,6 @@ static void wdmc_poweroff_handler(void)
 		val = readl(wdmc_poweroff->misc_gpio_dato);
 		val &= ~BIT(bit);
 		writel(val, wdmc_poweroff->misc_gpio_dato);
-		pr_emerg("wdmc-poweroff: misc-gpio bit %u driven low\n", bit);
 	}
 
 	if (wdmc_poweroff->usb_vbus_gpios) {
@@ -139,11 +132,7 @@ static void wdmc_poweroff_handler(void)
 		 */
 		for (i = 0; i < wdmc_poweroff->usb_vbus_gpios->ndescs; i++)
 			gpiod_direction_output(wdmc_poweroff->usb_vbus_gpios->desc[i], 0);
-		pr_emerg("wdmc-poweroff: usb vbus gpio(s) driven low (%u line(s))\n",
-			 wdmc_poweroff->usb_vbus_gpios->ndescs);
 	}
-
-	pr_emerg("wdmc-poweroff: handler done\n");
 }
 
 static int wdmc_poweroff_probe(struct platform_device *pdev)
