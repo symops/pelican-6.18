@@ -288,6 +288,34 @@
 	};
 
 	/*
+	 * Cosmetic power-off -- see drivers/power/reset/wdmc-poweroff.c for
+	 * the full story on why this isn't a real power cut. reg[0] is the
+	 * pwm@d0 block's own OCD register (4 bytes, all 4 channels packed
+	 * into one word -- see that node's own comment on why this can't be
+	 * an exclusive devm_platform_ioremap_resource() claim).
+	 *
+	 * wd,usb-vbus-gpios: misc-gpio (raw MMIO, 0x9801b100/0x9801b110) was
+	 * the first thing tried here and was exhaustively disproven on real
+	 * hardware -- every one of its 64 bits (both banks) swept with zero
+	 * effect on VBUS. These two rtk_iso_gpio lines are what the vendor's
+	 * own stock-firmware boot log on this exact unit actually uses
+	 * (rtk_usb_manager: power-gpio id=127/135 -> local offsets 26/34
+	 * under rtk_iso_gpio's gpio_base=101), confirmed by direct testing
+	 * to each cut one external USB port's power when held low for
+	 * several seconds (not a brief pulse) and restore it when driven
+	 * back high: line 34 is the bottom bay's port, line 26 the top
+	 * one's.
+	 */
+	poweroff: poweroff@70d0 {
+		compatible = "wd,mycloud-home-poweroff";
+		reg = <0x70d0 0x4>;
+		wd,pwm-off-channels = <0 3>; /* SYS LED=0, fan=3 */
+		wd,usb-vbus-gpios = <&rtk_iso_gpio 34 GPIO_ACTIVE_HIGH>,
+				     <&rtk_iso_gpio 26 GPIO_ACTIVE_HIGH>;
+		status = "okay";
+	};
+
+	/*
 	 * SATA PHY + AHCI controller, two ports. PHY driver: mainline
 	 * drivers/phy/realtek/phy-rtk-sata.c; AHCI glue:
 	 * drivers/ata/ahci_rtd1295.c (compatible "realtek,rtd1296-ahci" ->
@@ -774,10 +802,6 @@
 	status = "okay";
 };
 
-&rpc_comm {
-	no-map;
-};
-
 /*
  * LEDs and fan, PWM channel assignment confirmed against the real boot
  * log: "[RTK_PWM] rtd1295_pwm_probe - hwpwm=(3) enable=(1) duty_rate=(20)
@@ -901,13 +925,6 @@
 		timer_target = <0x100000>;
 		fan_debounce = <0x0>;
 		fan_factor = <2>;
-	};
-};
-
-/ {
-	poweroff {
-		compatible = "realtek,rtd129x-coolboot-poweroff";
-		memory-region = <&rpc_comm>;
 	};
 };
 

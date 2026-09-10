@@ -345,4 +345,15 @@ config POWER_MLXBF
 	help
 	  This driver supports reset or low power mode handling for Mellanox BlueField.
 
+config POWER_RESET_WDMC
+	tristate "WD My Cloud Home / Duo cosmetic power-off driver"
+	depends on ARCH_REALTEK || COMPILE_TEST
+	help
+	  This driver does not cut real board power (no such mechanism is
+	  known to exist on this hardware, in either mainline or the vendor
+	  GPL source). It quiets the SYS LED, fan (where present), and USB
+	  VBUS on WD My Cloud Home (RTD1295) / WD My Cloud Home Duo
+	  (RTD1296) when the system powers off, since those otherwise stay
+	  fully live after halt/poweroff on this board.
+
 endif
