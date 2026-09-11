@@ -4364,6 +4364,63 @@ pursue it.
 "okay"` (harmless with no child device node -- same bus Monarch's
 port also leaves enabled unconditionally).
 
+### Cosmetic poweroff driver (`drivers/power/reset/wdmc-poweroff.c`) -- LED, fan, HDD, USB VBUS
+
+Neither mainline nor the vendor 4.9.330 source implements a real
+hardware power-off for this board (no board-level 12V power-hold GPIO
+exists in either board's vendor DTS), so `halt`/`poweroff` used to just
+park the CPU with the board still fully powered: fan spinning, SYS LED
+lit, USB VBUS live on both bays, disks still spinning. This board's DTS
+carried a `realtek,rtd129x-coolboot-poweroff` node left over from the
+community port, but that compatible string matches no driver anywhere,
+mainline or vendor -- confirmed by grepping both GPL source drops
+directly; removed. New `wdmc-poweroff.c` driver (shared verbatim with
+symops/monarch-6.18) quiets everything actually under this SoC's
+control at shutdown time:
+
+- **SYS LED + fan**: turns off both PWM channels' OCD register bits
+  directly (same effect as `pwm_disable()`, reached by a raw
+  `devm_ioremap()` poke since the `pwm@d0` block is already exclusively
+  owned by the real `pwm-rtd129x.c` driver).
+- **HDD spin-down**: already worked via the existing SCSI
+  `manage_shutdown` sysfs attribute (enabled via udev at boot) -- not
+  reimplemented, just confirmed working alongside the new driver.
+- **USB VBUS**: the hard part. A misc-gpio raw-MMIO poke matching what
+  a rescue initramfs's own boot-time VBUS-enable step does was tried
+  first and *exhaustively disproven* on this exact board: every bit of
+  misc-gpio (both 32-bit banks, 64 bits total) and every `rtk_iso_gpio`
+  line swept with zero effect on VBUS -- because a brief 1-second hold,
+  the sweep's test duration, shows no effect at all even on a
+  genuinely correct line; the real threshold turned out to be several
+  seconds. The actual working mechanism only turned up by reading the
+  vendor's own `rtk_usb_manager.c` driver against a captured
+  **stock-firmware boot log from this exact physical unit**
+  (`mchd-stock-4.2.2.log`), not the generic reference-board DTS
+  (`rtd-1296-pelican-1GB.dts`), which lists a different, incomplete
+  GPIO set (2 power-gpios) than what this unit's retail firmware
+  actually uses (3, with two ports sharing one). Both of this board's
+  external USB ports turned out to be on `rtk_iso_gpio`, requested as
+  plain gpiod consumers, no raw MMIO needed: **line 34 is the bottom
+  bay's port, line 26 the top bay's** -- each independently confirmed
+  on real hardware (held low for several seconds, restored by driving
+  back high).
+
+**Status: confirmed working.** See symops/monarch-6.18's README for
+that board's own GPIO assignment (a completely different split: one
+port on a misc-gpio bit, no `rtk_iso_gpio` line in common with this
+board's) and the shared discovery methodology.
+
+### Base version bump: v6.18.46 -> v6.18.51
+
+Rebased onto the latest upstream stable point release following this
+file's "Updating the base version" procedure (single-parent
+`commit-tree`, upstream tags fetched under non-colliding aliases). The
+`v6.18.50 -> v6.18.51` merge was clean -- no conflicts, none of this
+port's own files touched by the upstream delta (480 files in the
+diffstat, all upstream-internal). Rebuilt `Image`/`dtbs`/`modules` with
+`LOCALVERSION=` and repackaged; **confirmed booting and working on real
+hardware** (alongside the poweroff driver above, same test).
+
 ## Not yet confirmed / not yet ported
 
 - **eMMC DMA** — forced to PIO (`DW_MMC_QUIRK_NO_DMA`, see Progress log
