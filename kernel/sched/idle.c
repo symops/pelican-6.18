@@ -295,6 +295,18 @@ static void do_idle(void)
 	__current_set_polling();
 	tick_nohz_idle_enter();
 
+	/*
+	 * WD My Cloud Home AHCI CPU0-interrupt-loss hang workaround, shared
+	 * between symops/pelican-6.18 (Duo) and symops/monarch-6.18
+	 * (Monarch) -- see pelican-6.18's README.md. Empirically, an
+	 * unrelated shift in kernel image layout/size around the do_idle()
+	 * idle-loop entry point changes how often the hang-triggering
+	 * condition occurs; the exact mechanism isn't understood, but 100
+	 * no-op instructions here (negligible cost: ~100 cycles, once per
+	 * do_idle() entry, only on the CPU idle path) reproducibly avoided
+	 * the hang in testing where the fix-free build reliably hung.
+	 */
+	asm volatile (".rept 100\n\tnop\n\t.endr");
 	while (!need_resched()) {
 
 		/*

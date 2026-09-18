@@ -1117,23 +1117,6 @@ static void __resched_curr(struct rq *rq, int tif)
 	struct thread_info *cti = task_thread_info(curr);
 	int cpu;
 
-	/*
-	 * AHCI CPU0-interrupt-loss hang workaround, shared between two board
-	 * ports: symops/pelican-6.18 (WD My Cloud Home Duo, dual-bay,
-	 * RTD1296) and symops/monarch-6.18 (WD My Cloud Home, single-bay,
-	 * RTD1295) -- see pelican-6.18's README.md, "AHCI CPU0-interrupt-loss
-	 * hang investigation", for the full story. An unconditional counter
-	 * here, incremented on every reschedule system-wide, empirically
-	 * reduced how often the hang-triggering condition occurred on Duo
-	 * hardware, where the bug was found and confirmed; applied to
-	 * Monarch as a precaution, since it shares the same RTD1295/1296 SoC
-	 * family and spin-table CPU hotplug limitation that made the bug
-	 * possible, even though it has not been directly observed there.
-	 * Verified not to break Monarch's own boot/functionality. No lock
-	 * involved.
-	 */
-	cma_diag_race_shift_calls++;
-
 	lockdep_assert_rq_held(rq);
 
 	/*
