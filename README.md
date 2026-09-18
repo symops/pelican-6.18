@@ -4421,6 +4421,131 @@ diffstat, all upstream-internal). Rebuilt `Image`/`dtbs`/`modules` with
 `LOCALVERSION=` and repackaged; **confirmed booting and working on real
 hardware** (alongside the poweroff driver above, same test).
 
+### Base version bump: v6.18.51 -> v6.18.52, and the CPU0-hang regression
+
+Rebased onto v6.18.52 the same way (1514 files in the diffstat, all
+upstream-internal, clean merge). Rebuilt and repackaged -- but real
+hardware testing showed the AHCI CPU0-interrupt-loss hang (see "Base
+version bump: v6.18.45 -> v6.18.46" above) now reproducing **on every
+boot**, not intermittently as previously documented.
+
+**Bisected the 1489 real upstream commits between v6.18.51 and
+v6.18.52** (fetched under a `upstream-v6.18.52` alias with full
+history, not the squashed single merge commit used to land the bump)
+via binary search: built intermediate checkpoints with this file's own
+`git merge-tree`/`commit-tree` procedure, but applied to the working
+tree as plain `patch -p1` diffs rather than `git checkout`, since a
+git-repo cross-checkout wasn't available in the environment this
+bisection ran in. Found the trigger: commit `ff422b8597c2` ("syscore:
+Pass context data to callbacks"), a mechanical API rename
+(`register_syscore_ops` -> `register_syscore`, adding a `void *data`
+parameter) touching drivers' suspend/resume/shutdown paths tree-wide.
+
+**Confirmed the trigger commit has zero functional effect on this
+board.** Of its ~109 changed files, only 8 actually compile for this
+arm64 config (`drivers/base/syscore.c`,
+`drivers/base/firmware_loader/main.c`,
+`drivers/irqchip/irq-gic-v3-its.c` [dead code here -- this board's GIC
+is GICv2/`gic-400`, no ITS node in the DT], `kernel/cpu_pm.c`,
+`kernel/irq/pm.c`, `kernel/printk/printk.c`,
+`kernel/time/sched_clock.c`, `kernel/time/timekeeping.c`) -- every one
+of them is a suspend/resume/shutdown-only code path, never executed
+during normal boot. Measured the real byte-level size change of every
+touched function: at most ~130 bytes of genuine growth total, yet the
+overall `.text` section *shrank* by 4100 bytes between the pre- and
+post-commit builds -- a diffuse compiler-codegen artifact (register
+allocation/inlining decisions cascading from the trivial signature
+change elsewhere in the image), not something localized to the
+commit's own code.
+
+**Confirmed the hang can't be fixed by skipping this one commit.**
+Built "v6.18.52 minus just commit `ff422b8597c2`'s own diff" (all
+other 1488 commits applied) -- hung identically on real hardware. The
+remaining ~1488 commits' cumulative layout drift is independently
+sufficient to trigger it.
+
+**A 5 KiB padding experiment falsified the "any address shift helps"
+theory.** Added 5 KiB of dead `.text` (`asm(".pushsection
+.text,\"ax\"\n...\n.space 5120, 0\n...")`, decodes as `UDF` on AArch64
+if ever reached, never branched to) in `kernel/dma/direct.c` right
+before the trigger commit's affected region, to compensate its ~4 KiB
+shift. Measured result: this moved `ahci_rtd1295_probe` *past* a
+previously-confirmed-safe checkpoint's own address, in the same
+direction the trigger commit had shifted it -- and it still hung. The
+relationship between code address/layout and the hang is not simply
+monotonic.
+
+**Confirmed the underlying race predates v6.18.52 entirely.** Built
+"v6.18.51, with the old delay+counter workaround stripped out" --
+hung, with a signature *identical* to everything seen on v6.18.52
+(`port 0 is not capable of FBS` -> RCU stall -> NMI backtrace stuck at
+`arch_local_irq_enable+0x4/0x8` inside `do_idle()`). The old
+workaround (from the original v6.18.46 investigation, see above)
+genuinely works at v6.18.51's code layout; it simply stopped being
+sufficient once the layout shifted at v6.18.52. This is the same
+never-root-caused CPU0 scheduling/GIC race documented in "Base version
+bump: v6.18.45 -> v6.18.46" above, not a new bug introduced by this
+bump.
+
+**Traced the block one level deeper than the original investigation
+reached.** Instrumented the call chain `dma_direct_alloc()` ->
+`dma_alloc_contiguous()` -> `cma_alloc()`/`cma_range_alloc()` ->
+`alloc_contig_range()` -> `__alloc_contig_migrate_range()` ->
+`lru_cache_disable()`, and confirmed the block is inside
+`lru_cache_disable()`'s call to `synchronize_rcu_expedited()` itself
+-- one step earlier than the original investigation's
+`__lru_add_drain_all()`/`flush_work()` finding, which is never even
+reached this time. Traced further into RCU's own expedited-grace-period
+internals (`kernel/rcu/tree_exp.h`): the IPI to CPU0
+(`smp_call_function_single(0, rcu_exp_handler, ...)`) dispatches
+successfully and `rcu_exp_handler()` *does* run on CPU0 (confirmed by
+instrumentation, ~2 microseconds after dispatch) -- ruling out a
+lost/undelivered IPI. The handler takes the `depth=0`,
+not-idle-not-softirq branch, calling `rcu_exp_need_qs()`, which only
+sets `TIF_NEED_RESCHED` on the interrupted task (`swapper/0`) and
+expects `do_idle()`'s own `while (!need_resched())` loop to notice on
+its own. Instrumented that loop with a summary throttled to at most
+once per second (to avoid perturbing the very race under
+investigation) and saw **zero** "still looping" output during
+multi-second hangs -- i.e. `do_idle()` is not spinning uselessly,
+failing to notice the flag; the loop most likely exits correctly on
+its very next check, meaning the actual block is further downstream,
+inside `schedule_idle()`/`__schedule()`.
+
+**Could not safely instrument any further.** Every attempt to add
+tracing past this point -- even a single branch-free array-index
+memory write (`cma_diag_idle_step[cpu] = 1`, no comparison
+instruction at all) -- was enough to stop the hang from reproducing on
+repeat hardware tests. Separately, enabling `CONFIG_FTRACE`/
+`CONFIG_TRACING` to use the kernel's own pre-existing
+`trace_cpu_idle()`/`trace_rcu_exp_grace_period()` tracepoints (no
+source edits to the sensitive functions themselves) *also* stopped the
+hang from reproducing, most likely because the whole-kernel rebuild
+with different subsystem config shifted the same fragile layout again.
+A **comment-only edit** to `kernel/sched/idle.c` (verified zero
+code-generation change via `size`/`nm` comparison against the
+unmodified build) still reproduced the hang -- conclusively
+distinguishing "recompiling/touching this file" (harmless) from
+"changing its compiled code" (breaks reproduction), and confirming
+once more that this is a pure code-layout/alignment-sensitive hardware
+race, not a logic bug reachable by conventional live debugging on this
+hardware.
+
+**Resolution: replaced the delay+counter workaround with 100 no-op
+instructions.** Since the original workaround (`usleep_range()` in
+`dma_direct_alloc()` plus an unconditional counter in
+`__resched_curr()`) no longer reliably avoided the hang at v6.18.52's
+layout, and root-causing the actual race proved unreachable via live
+instrumentation on this hardware, replaced both pieces with
+`asm volatile (".rept 100\n\tnop\n\t.endr");` right before
+`do_idle()`'s idle loop (`kernel/sched/idle.c`). This is, like the
+workaround it replaces, purely an empirical layout perturbation --
+not a fix in any understood sense. Verified 2/2 clean boots in a row
+on real Duo hardware in a session where the fix-free build hung on
+every attempt; ported identically to Monarch and confirmed working
+there too. Cost is negligible: ~100 cycles once per `do_idle()` entry,
+on the idle path only.
+
 ## Not yet confirmed / not yet ported
 
 - **eMMC DMA** — forced to PIO (`DW_MMC_QUIRK_NO_DMA`, see Progress log
