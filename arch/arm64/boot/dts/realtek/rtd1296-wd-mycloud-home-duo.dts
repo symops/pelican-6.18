@@ -711,12 +711,19 @@
  * value carried over: the vendor's rtk_fan.c has no in-kernel thermal
  * curve at all -- just a manual 0-10 sysfs knob plus tach RPM readback,
  * presumably driven by a userspace daemon this port doesn't have source
- * for. 55C/70C give the fan a chance to cool the board (two spinning SATA
- * drives share this enclosure) well before soc_hot's 85C passive
- * CPU-throttle point would ever need to engage. Unlike every other
- * threshold in this file, these two are not cross-checked against
- * anything -- reasonable first guesses, worth revisiting once real
- * hardware shows actual temperatures under load.
+ * for. 55C/70C were originally meant to give the fan a chance to cool the
+ * board (two spinning SATA drives share this enclosure) well before
+ * soc_hot's 85C passive CPU-throttle point would ever need to engage.
+ *
+ * Deliberately NOT wired into `fan0`'s cooling-maps (see below): the
+ * generic `pwm-fan` driver's thermal-governor callback
+ * (`pwm_fan_set_cur_state()`) unconditionally reasserts its own
+ * `cooling-levels` value on every `polling-delay` cycle whenever the
+ * cooling device's cached state differs from the trip's computed target
+ * -- which fights any manual write to hwmon's `pwm1`, silently reverting
+ * it within seconds. Left the trip points themselves defined (harmless,
+ * available for monitoring/a future userspace daemon) but not bound to
+ * `fan0`, so `pwm1` stays fully and durably under manual control.
  */
 / {
 	thermal-zones {
@@ -758,16 +765,6 @@
 							 <&cpu1 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
 							 <&cpu2 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
 							 <&cpu3 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
-				};
-
-				map1 {
-					trip = <&fan_alert0>;
-					cooling-device = <&fan0 1 1>;
-				};
-
-				map2 {
-					trip = <&fan_alert1>;
-					cooling-device = <&fan0 2 2>;
 				};
 			};
 		};
