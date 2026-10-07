@@ -4,10 +4,15 @@ This is the dual-bay sibling of [symops/monarch-6.18](https://github.com/symops/
 (the single-bay WD My Cloud Home, Realtek RTD1295 "Monarch") — read
 **that repo's README.md first**. Most of the generic RTD129x-family
 bring-up decisions (SMP spin-table, IRQ mux, PWM controller driver, cpufreq/SCPU
-clock, thermal, GMAC, the Image-header-patch requirement, raw-not-gzip
+clock, thermal, GMAC, the Image-header-patch requirement, gzip'd Image
 packaging, the USB-rescue dev loop itself) are identical between the two
 boards and only documented there. This file covers only what's specific to
 the Duo.
+
+For a full step-by-step build walkthrough — toolchain setup on a clean
+Debian 13 machine through packaging for USB rescue-boot testing and
+flashing a normal (non-rescue) boot via the firmware checksum table — see
+[`BUILDING.md`](BUILDING.md) (covers both boards).
 
 ## Acknowledgments
 
