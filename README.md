@@ -74,13 +74,13 @@ Not read by U-Boot's rescue path itself, but packaged alongside it for
 deploying the same build's modules onto the full installed OS (SATA
 rootfs): `modules.tar.xz`, tarred from *inside*
 `INSTALL_MOD_PATH/lib/modules/` (i.e. `cd .../lib/modules && tar -cJf
-modules.tar.xz .`) so the archive root is `./6.18.45+/...`, matching
+modules.tar.xz .`) so the archive root is `./6.18.5X/...`, matching
 Monarch's own `modules.tar.xz` structure exactly — extracting it with
 `tar -C /lib/modules -xf modules.tar.xz` lands the version directory
-directly at `/lib/modules/6.18.45+/`. An earlier build of this archive
-was tarred one level up instead (rooted at `lib/modules/6.18.45+/...`),
+directly at `/lib/modules/6.18.5X/`. An earlier build of this archive
+was tarred one level up instead (rooted at `lib/modules/6.18.5X/...`),
 which would have extracted to the wrong, doubly-nested path
-(`/lib/modules/lib/modules/6.18.45+/`) — fixed to match Monarch's
+(`/lib/modules/lib/modules/6.18.5X/`) — fixed to match Monarch's
 convention.
 
 Confirmed by a real vendor 4.9.330 rescue-mode boot log from this exact unit:
@@ -4550,6 +4550,46 @@ on real Duo hardware in a session where the fix-free build hung on
 every attempt; ported identically to Monarch and confirmed working
 there too. Cost is negligible: ~100 cycles once per `do_idle()` entry,
 on the idle path only.
+
+### Base version bump: v6.18.52 -> v6.18.54
+
+Rebased onto v6.18.54 the same way -- clean merge, no conflicts.
+Rebuilt `Image`/`dtbs`/`modules` with `LOCALVERSION=` and repackaged;
+KSMBD (`CONFIG_SMB_SERVER`) also enabled in `.config` around this point
+(module, with `SMB_SERVER_KERBEROS5`) -- `.config` isn't tracked in
+git, so that change lives only in built artifacts, not in this history.
+
+### Fan control: permanent manual mode, removed from the thermal governor
+
+**Supersedes "Fan wired into the thermal governor" above.** On real
+hardware, writing `/sys/class/hwmon/hwmon0/pwm1` by hand to override the
+governor's duty cycle got silently reverted a couple of seconds later
+by the next governor poll -- `pwm-fan`'s sysfs write path updates its
+own cached cooling-device state, but the thermal governor's periodic
+poll only rewrites hardware PWM when its own computed target state
+*differs* from that cache, so a manual write whose bucket happened to
+match the governor's current target stuck, and one that didn't got
+overwritten back. Confirmed by temporarily raising `fan_alert0`/
+`fan_alert1`'s trip points out of reach on real hardware: with the
+governor unable to ever want a non-zero state, manual writes held
+stable indefinitely.
+
+Rather than fight the governor for occasional manual overrides,
+removed `fan0`'s two `cooling-maps` entries (`map1`/`map2`) from the
+board DTS entirely -- `fan0` still registers as a `thermal_cooling_device`
+(inert) and the trip points stay defined and readable, but nothing
+ever calls `pwm_fan_set_cur_state()` on it anymore, so `pwm1` is now
+under permanent, uncontested manual control. This intentionally and
+completely disables automatic active-cooling response for the fan, an
+explicit trade-off for predictable manual control. **Confirmed stable
+on real hardware** after the fix (`echo 150 > pwm1` holds indefinitely,
+no revert). DTB-only change; `Image`/modules/the separate initrd
+untouched.
+
+### Base version bump: v6.18.54 -> v6.18.55
+
+Rebased onto v6.18.55 the same way -- clean merge, no conflicts.
+Rebuilt and repackaged with `LOCALVERSION=` as usual.
 
 ## Not yet confirmed / not yet ported
 
