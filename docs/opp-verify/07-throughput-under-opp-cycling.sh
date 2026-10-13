@@ -25,13 +25,25 @@ SIZE_MB=512
 run_pass() {
 	label="$1"; dir="$2"
 	wfile="$dir/opp-throughput-test.bin"
-	# Write
+	# Write -- timed with plain `date +%s` (second resolution, no external
+	# timing tool). Confirmed on real Monarch hardware: the previous
+	# /usr/bin/time-based version died silently with no output at all,
+	# because /usr/bin/time (the separate "time" package) isn't installed
+	# on a minimal Debian image -- "not found" (exit 127) inside the
+	# `wtime=$( { ... ; } 2>&1 )` subshell both (a) killed the script
+	# instantly under `set -e` and (b) got swallowed into $wtime by the
+	# 2>&1 redirect instead of ever reaching the terminal, so the failure
+	# was completely invisible.
 	sync; echo 3 > /proc/sys/vm/drop_caches 2>/dev/null || true
-	wtime=$( { /usr/bin/time -f "%e" dd if=/dev/zero of="$wfile" bs=1M count="$SIZE_MB" conv=fdatasync status=none 2>&1; } 2>&1 )
+	wstart=$(date +%s)
+	dd if=/dev/zero of="$wfile" bs=1M count="$SIZE_MB" conv=fdatasync status=none
+	wtime=$(( $(date +%s) - wstart ))
 	wmbps=$(awk -v s="$SIZE_MB" -v t="$wtime" 'BEGIN{ if (t>0) printf "%.1f", s/t; else print "?" }')
 	# Read
 	sync; echo 3 > /proc/sys/vm/drop_caches 2>/dev/null || true
-	rtime=$( { /usr/bin/time -f "%e" dd if="$wfile" of=/dev/null bs=1M status=none 2>&1; } 2>&1 )
+	rstart=$(date +%s)
+	dd if="$wfile" of=/dev/null bs=1M status=none
+	rtime=$(( $(date +%s) - rstart ))
 	rmbps=$(awk -v s="$SIZE_MB" -v t="$rtime" 'BEGIN{ if (t>0) printf "%.1f", s/t; else print "?" }')
 	rm -f "$wfile"
 	echo "$label write=${wmbps}MB/s read=${rmbps}MB/s"

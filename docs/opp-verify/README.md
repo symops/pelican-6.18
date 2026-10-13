@@ -47,8 +47,12 @@ scripted here -- they're one-off manual actions (does it boot at all, does
 - `userspace` and `schedutil` cpufreq governors built in.
 - `CONFIG_CPU_FREQ_STAT` for `05-schedutil-soak.sh`'s transition counter
   (falls back to manual polling if absent, just less precise).
-- Usual coreutils (`dd`, `gzip`, `sha256sum`, `awk`) plus `/usr/bin/time`
-  (from the `time` package) for `07-throughput-under-opp-cycling.sh`.
+- Usual coreutils (`dd`, `gzip`, `sha256sum`, `awk`, `date`) only -- no
+  separate packages (e.g. the `time` package's `/usr/bin/time`) are
+  required. `07-throughput-under-opp-cycling.sh` used to depend on
+  `/usr/bin/time` and died silently on a real board where that package
+  wasn't installed; it's now timed with plain `date +%s` instead, same
+  as every other script here.
 
 ## Suggested run order
 
