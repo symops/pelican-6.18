@@ -209,14 +209,30 @@ check_voltage() {
 	fi
 }
 
+# Reads the SoC temperature in degrees Celsius (one decimal place) from the
+# standard kernel thermal framework (confirmed live on real RTD1295/RTD1296
+# hardware: /sys/class/thermal/thermal_zone*/temp holds a raw integer in
+# millidegrees C, e.g. "50642" == 50.6C). Any failure to find/read/parse a
+# zone is reported loudly -- never silently printed as a fake "0.0".
 read_temp_c() {
 	for z in /sys/class/thermal/thermal_zone*/temp; do
 		[ -r "$z" ] || continue
-		v=$(cat "$z")
-		echo "scale=1; $v/1000" | awk '{printf "%.1f\n", $1/1000}' 2>/dev/null || echo "$((v/1000))"
-		return
+		v=$(cat "$z" 2>/dev/null)
+		case "$v" in
+			''|*[!0-9-]*)
+				echo "temperature monitoring unavailable: $z contained non-numeric data ('$v')" >&2
+				continue
+				;;
+		esac
+		whole=$((v / 1000))
+		frac=$(( (v % 1000) / 100 ))
+		[ "$frac" -lt 0 ] && frac=$((-frac))
+		echo "${whole}.${frac}"
+		return 0
 	done
+	echo "temperature monitoring unavailable: no readable /sys/class/thermal/thermal_zone*/temp" >&2
 	echo "?"
+	return 1
 }
 
 restore_governor() {
