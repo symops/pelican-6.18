@@ -10,7 +10,7 @@
 #   to make schedutil switch often -- raise it, or raise the load, if you
 #   hit the cap without reaching min_transitions).
 #
-# Run as root on real Duo hardware.
+# Run as root on real hardware (Duo or Monarch -- both carry the same cpu-supply/operating-points-v2 structure, discovered live, see common.sh).
 set -e
 . "$(dirname "$0")/common.sh"
 

@@ -2,7 +2,7 @@
 # Checklist item 3: a direct 1400 -> 600 MHz jump (skipping the intermediate
 # points), same voltage read-back check as item 2 -- the transition most
 # likely to expose a wrong regulator-ramp-delay/coupling-spread value.
-# Run as root on real Duo hardware.
+# Run as root on real hardware (Duo or Monarch -- both carry the same cpu-supply/operating-points-v2 structure, discovered live, see common.sh).
 set -e
 . "$(dirname "$0")/common.sh"
 

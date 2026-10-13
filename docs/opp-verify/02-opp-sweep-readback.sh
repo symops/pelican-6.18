@@ -1,7 +1,7 @@
 #!/bin/sh
 # Checklist item 2: step through every OPP up and down individually, reading back
 # both cpudvs (DC2) and the coupled L2 rail (ldo3) after each step, confirming
-# they land at the DTS opp-microvolt target. Run as root on real Duo hardware.
+# they land at the DTS opp-microvolt target. Run as root on real hardware (Duo or Monarch -- both carry the same cpu-supply/operating-points-v2 structure, discovered live, see common.sh).
 set -e
 . "$(dirname "$0")/common.sh"
 

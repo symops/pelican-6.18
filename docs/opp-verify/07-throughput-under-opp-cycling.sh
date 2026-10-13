@@ -10,11 +10,12 @@
 #   nfs_test_dir optional: a directory under an already-mounted NFS share,
 #                to mirror PR #9's own gigabit-NFS check specifically.
 #
-# Run as root on real Duo hardware.
+# Run as root on real hardware (Duo or Monarch -- both carry the same cpu-supply/operating-points-v2 structure, discovered live, see common.sh).
 set -e
 . "$(dirname "$0")/common.sh"
 
 require_root
+discover_dt
 TEST_DIR="${1:?usage: $0 <test_dir-on-real-disk> [nfs_test_dir]}"
 NFS_DIR="${2:-}"
 SIZE_MB=512

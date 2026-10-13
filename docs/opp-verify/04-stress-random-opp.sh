@@ -8,11 +8,12 @@
 # PR #9's own run was "several minutes" -- use a longer value for a more
 # thorough soak, e.g. 1800 for 30 min).
 #
-# Run as root on real Duo hardware.
+# Run as root on real hardware (Duo or Monarch -- both carry the same cpu-supply/operating-points-v2 structure, discovered live, see common.sh).
 set -e
 . "$(dirname "$0")/common.sh"
 
 require_root
+discover_dt
 DURATION="${1:-300}"
 WORKDIR=$(mktemp -d /tmp/opp-stress.XXXXXX)
 trap 'kill $(jobs -p) 2>/dev/null; rm -rf "$WORKDIR"' EXIT
