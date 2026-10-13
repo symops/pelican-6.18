@@ -4591,43 +4591,6 @@ untouched.
 Rebased onto v6.18.55 the same way -- clean merge, no conflicts.
 Rebuilt and repackaged with `LOCALVERSION=` as usual.
 
-### CPU0-hang workaround bumped: 100 -> 1000 no-op instructions
-
-**New symptom, different stack from the documented CPU0-hang above.**
-After porting PR #9's G2227 PMIC/DVFS infrastructure (6.18.56 base,
-see `docs/pr-6-9-duo-adaptation-plan.md`), real Duo hardware hit an
-RCU stall on CPU0 during boot with a call stack this investigation had
-never seen before: `dt_cpufreq_probe` -> `cpufreq_online` ->
-`of_cpufreq_cooling_register` -> `device_register` ->
-`kobject_uevent_env`, registering the new cpufreq-cooling thermal
-device that PR #9's cpufreq driver brings up for the first time. CPU0
-was actively executing `kworker` code at the time, not stuck inside
-`do_idle()` like every previously documented occurrence of this class
-of hang. Monarch ran the identical ported code for many hours of real
-OPP/schedutil/stress testing (see `docs/opp-verify/`) with zero such
-stalls, so this looks Duo-specific rather than a generic bug in the
-ported cpufreq/thermal code -- root cause not established.
-
-**Applied the same empirical layout-perturbation lever as before,
-just turned up.** Per the precedent above (and the extensive evidence
-throughout this file that an *unrelated* shift in kernel image
-layout/size changes whether this whole class of hardware race
-reproduces, with no understood mechanism), bumped
-`asm volatile (".rept 100\n\tnop\n\t.endr");` to `.rept 1000` right
-before `do_idle()`'s idle loop (`kernel/sched/idle.c`). This is
-explicitly a shot in the dark, not a reasoned fix for this specific
-new stack trace -- but it's cheap (negligible cost: ~1000 cycles once
-per `do_idle()` entry, idle path only) and consistent with how this
-exact workaround has already been retuned once before (see "Base
-version bump: v6.18.51 -> v6.18.52" above, where 100 replaced the
-original delay+counter scheme). Applied identically to both ports
-(Duo and Monarch) per this workaround's established cross-repo-sync
-convention, even though Monarch has shown no symptom of this new
-stall -- keeping the two in lockstep avoids divergence for a value
-that's already known to be arbitrary. Both rebuilt clean
-(`Image`/`modules`/`dtbs`, `LOCALVERSION=`); real-hardware boot
-retest on Duo pending.
-
 ## Not yet confirmed / not yet ported
 
 - **eMMC DMA** — forced to PIO (`DW_MMC_QUIRK_NO_DMA`, see Progress log
