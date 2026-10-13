@@ -110,22 +110,30 @@ unverified on this silicon.
    or raw sysfs), reading back both `cpudvs` (DC2) and the coupled L2 rail
    (LDO3) via the regulator debugfs/sysfs after each step, confirming they
    land at the DTS-specified `opp-microvolt` target each time.
+   Script: `opp-verify/02-opp-sweep-readback.sh`.
 3. A direct 1400 -> 600 MHz jump (skipping intermediate points), same
    read-back check -- this is the transition most likely to expose a wrong
    `regulator-ramp-delay`/coupling-spread value.
+   Script: `opp-verify/03-direct-1400-to-600.sh`.
 4. Multi-core sustained load (PR #9 used 4 cores compressing/verifying data)
    with the OPP changing at random every ~0.1s for several minutes; watch
    for any lockup, thermal shutdown, or silent reset. Record steady-state
    temperature.
+   Script: `opp-verify/04-stress-random-opp.sh`.
 5. Real `schedutil` governor, left running under normal load for at least
    as long as PR #9's test (1000+ transitions); check `dmesg` for any
    regulator or cpufreq error, and that `cpuinfo_cur_freq` / voltage
    readback stay consistent with the governor's choice throughout.
+   Script: `opp-verify/05-schedutil-soak.sh`.
 6. `reboot` and `poweroff` both still work correctly after the OPP changes
    (regulator `regulator-state-coldboot` entries must not leave a rail
    wrongly off/on across a reboot).
 7. Disk/network throughput unaffected (PR #9's own NFS-fills-gigabit check)
    -- run while cycling OPPs, not only at a fixed frequency.
+   Script: `opp-verify/07-throughput-under-opp-cycling.sh`.
+
+All five scripts and their shared helpers live under `opp-verify/` next to
+this document; see `opp-verify/README.md` for requirements and usage.
 
 Until this checklist has been run on real Duo hardware, treat the OPP
 voltage values as a reasonable starting point ported from a related but
