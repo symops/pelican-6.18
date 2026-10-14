@@ -72,6 +72,9 @@
 #define WDMC_UART_MCR		0x10
 #define WDMC_UART_LSR		0x14
 #define WDMC_UART_MCR_LOOP	BIT(4)
+#define WDMC_UART_MCR_DTR	BIT(0)
+#define WDMC_UART_MCR_RTS	BIT(1)
+#define WDMC_UART_MCR_AFCE	BIT(5)
 #define WDMC_UART_LSR_TEMT	BIT(6)
 
 /*
@@ -86,7 +89,7 @@
 #define WDMC_ACPU_FW_SIZE	0x004be000
 
 /* How many times the power-off request is sent (1 s each) if the audio CPU does not answer */
-#define WDMC_IPC_ATTEMPTS	5
+#define WDMC_IPC_ATTEMPTS	3
 
 /* struct rtk_ipc_shm (WD 4.9 rtk_ipc_shm.h) at 0xc4 into the RPC page, big-endian */
 #define WDMC_IPC_AUDIO_RPC_FLAG	(0xc4 + 0x0c)
@@ -105,6 +108,7 @@ struct wdmc_poweroff_data {
 	void __iomem *crt_reset2;
 	void __iomem *crt_clock2;
 	const u32 *acpu_fw;
+	struct gpio_desc *sleep_gpio;
 	unsigned int pwm_channels[WDMC_MAX_PWM_CHANNELS];
 	unsigned int n_pwm_channels;
 };
@@ -139,6 +143,10 @@ static void wdmc_acpu_report(struct wdmc_poweroff_data *d, const char *when)
 		 d->ipc ? ioread32be(d->ipc) : 0,
 		 d->ipc ? ioread32be(d->ipc + 0xc4) : 0,
 		 d->ipc ? ioread32be(d->ipc + WDMC_IPC_AUDIO_RPC_FLAG) : 0);
+	if (d->uart)
+		pr_emerg("wdmc-poweroff: UART0 (%s): lsr=%02x (thre=%u temt=%u) mcr=%02x\n", when,
+			 readl(d->uart + WDMC_UART_LSR), (readl(d->uart + WDMC_UART_LSR) >> 5) & 1,
+			 (readl(d->uart + WDMC_UART_LSR) >> 6) & 1, readl(d->uart + WDMC_UART_MCR));
 }
 
 static void wdmc_poweroff_handler(void)
@@ -207,7 +215,9 @@ static void wdmc_poweroff_handler(void)
 
 		for (attempt = 1; attempt <= WDMC_IPC_ATTEMPTS; attempt++) {
 			if (uart)
-				writel(mcr | WDMC_UART_MCR_LOOP, uart + WDMC_UART_MCR);
+				/* loopback ties CTS to RTS: keep RTS up and auto flow control off so TX cannot stall */
+				writel((mcr | WDMC_UART_MCR_LOOP | WDMC_UART_MCR_RTS | WDMC_UART_MCR_DTR) &
+				       ~WDMC_UART_MCR_AFCE, uart + WDMC_UART_MCR);
 			iowrite32be(0x00020000, ipc + WDMC_IPC_SUSPEND_MASK);
 			iowrite32be(0x40000002, ipc + WDMC_IPC_SUSPEND_FLAG);
 			iowrite32be(0xdeadffff, ipc + WDMC_IPC_AUDIO_RPC_FLAG);
@@ -227,6 +237,18 @@ static void wdmc_poweroff_handler(void)
 		/* Still running means the power was not cut: undo the loopback to say why */
 		if (uart)
 			writel(mcr, uart + WDMC_UART_MCR);
+		if (attempt > WDMC_IPC_ATTEMPTS && wdmc_poweroff->sleep_gpio) {
+			/*
+			 * The audio CPU's last act is to pull ISO GPIO 0, the PMIC's sleep
+			 * input, low (symops/monarch-6.18#6). The sleep modes were already
+			 * written by the g2227 regulator driver's shutdown hook, so do it
+			 * ourselves rather than leave the board powered. Unverified on Duo.
+			 */
+			pr_emerg("wdmc-poweroff: the audio CPU never answered, pulling the PMIC sleep input (ISO GPIO 0) low ourselves\n");
+			gpiod_direction_output(wdmc_poweroff->sleep_gpio, 0);
+			mdelay(2000);
+			pr_emerg("wdmc-poweroff: still running 2 s after pulling the PMIC sleep input low\n");
+		}
 		pr_emerg("wdmc-poweroff: the audio CPU %s the power-off request (attempt %d, %d ms): rpc=%08x mask=%08x flag=%08x\n",
 			 attempt <= WDMC_IPC_ATTEMPTS ? "took" : "never took", attempt, i,
 			 ioread32be(ipc + WDMC_IPC_AUDIO_RPC_FLAG),
@@ -304,6 +326,13 @@ static int wdmc_poweroff_probe(struct platform_device *pdev)
 		data->ipc = devm_ioremap(dev, ipc.start, resource_size(&ipc));
 		if (!data->ipc)
 			return dev_err_probe(dev, -ENOMEM, "cannot map memory-region\n");
+	}
+
+	/* PMIC sleep input (ISO GPIO 0): last-resort power cut if the audio CPU never answers */
+	data->sleep_gpio = devm_gpiod_get_optional(dev, "wd,pmic-sleep", GPIOD_ASIS);
+	if (IS_ERR(data->sleep_gpio)) {
+		dev_warn(dev, "cannot get the pmic-sleep gpio: %ld\n", PTR_ERR(data->sleep_gpio));
+		data->sleep_gpio = NULL;
 	}
 
 	/* Diagnostic views of the audio CPU's state (read-only) */

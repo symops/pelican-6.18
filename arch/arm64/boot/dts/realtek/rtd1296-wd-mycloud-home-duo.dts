@@ -336,6 +336,7 @@
 		wd,usb-vbus-gpios = <&rtk_iso_gpio 34 GPIO_ACTIVE_HIGH>,
 				     <&rtk_iso_gpio 26 GPIO_ACTIVE_HIGH>;
 		memory-region = <&rpc_comm>;		/* IPC with the audio CPU */
+		wd,pmic-sleep-gpios = <&rtk_iso_gpio 0 GPIO_ACTIVE_HIGH>;	/* PMIC sleep input, last-resort power cut */
 		status = "okay";
 	};
 
