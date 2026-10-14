@@ -120,6 +120,14 @@ open('usb-payload/rescue.root.<emmc|sata>.cpio.gz_pad.img', 'wb').write(
 "
 ```
 
+`initramfs/bin/` carries a symlink to `/bin/busybox` for every applet of the bundled static busybox (`busybox --list`, ~400 of them). The init script and the rescue shell rely on them (`insmod`, `grep`, `sed`, `ip`, `udhcpc`, `telnetd`, ...): this busybox is not built with `FEATURE_SH_STANDALONE`, so without the links they fail with `not found`. After replacing `bin/busybox` with a build that has a different applet set, re-create the links with:
+
+```sh
+cd initramfs/bin && for a in $(qemu-aarch64 ./busybox --list); do [ -e "$a" ] || [ "$a" = busybox ] || [ "$a" = init ] || ln -s /bin/busybox "$a"; done
+```
+
+(use `./busybox --list` directly on an aarch64 host).
+
 The bootloader's rescue path reads this file as a **fixed 4,194,304-byte block**, regardless of real payload size — the zero-padding to that exact length is mandatory, not cosmetic.
 
 ## 9. Install and package the modules
