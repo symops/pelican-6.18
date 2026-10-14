@@ -74,6 +74,9 @@
 #define WDMC_UART_MCR_LOOP	BIT(4)
 #define WDMC_UART_LSR_TEMT	BIT(6)
 
+/* How many times the power-off request is sent (1 s each) if the audio CPU does not answer */
+#define WDMC_IPC_ATTEMPTS	5
+
 /* struct rtk_ipc_shm (WD 4.9 rtk_ipc_shm.h) at 0xc4 into the RPC page, big-endian */
 #define WDMC_IPC_AUDIO_RPC_FLAG	(0xc4 + 0x0c)
 #define WDMC_IPC_SUSPEND_MASK	(0xc4 + 0x10)
@@ -138,6 +141,7 @@ static void wdmc_poweroff_handler(void)
 		void __iomem *ipc = wdmc_poweroff->ipc;
 		void __iomem *uart = wdmc_poweroff->uart;
 		u32 mcr = 0;
+		int attempt;
 
 		/* The firmware prints on UART0 before taking the request: loop it back to drain */
 		if (uart) {
@@ -147,20 +151,38 @@ static void wdmc_poweroff_handler(void)
 				udelay(10);
 			}
 			mcr = readl(uart + WDMC_UART_MCR);
-			writel(mcr | WDMC_UART_MCR_LOOP, uart + WDMC_UART_MCR);
 		}
 
-		/* Suspend version 2, author SCPU, coolboot; the firmware clears the request */
-		iowrite32be(0x00020000, ipc + WDMC_IPC_SUSPEND_MASK);
-		iowrite32be(0x40000002, ipc + WDMC_IPC_SUSPEND_FLAG);
-		iowrite32be(0xdeadffff, ipc + WDMC_IPC_AUDIO_RPC_FLAG);
-		for (i = 0; i < 1000 && ioread32be(ipc + WDMC_IPC_AUDIO_RPC_FLAG); i++)
-			mdelay(1);
+		/*
+		 * Suspend version 2, author SCPU, coolboot; the firmware clears
+		 * the request. On real hardware the audio CPU sometimes did not
+		 * answer at all (rpc flag still 0xdeadffff after a second) and the
+		 * board stayed powered, so ask again a few times.
+		 */
+		for (attempt = 1; attempt <= WDMC_IPC_ATTEMPTS; attempt++) {
+			if (uart)
+				writel(mcr | WDMC_UART_MCR_LOOP, uart + WDMC_UART_MCR);
+			iowrite32be(0x00020000, ipc + WDMC_IPC_SUSPEND_MASK);
+			iowrite32be(0x40000002, ipc + WDMC_IPC_SUSPEND_FLAG);
+			iowrite32be(0xdeadffff, ipc + WDMC_IPC_AUDIO_RPC_FLAG);
+			for (i = 0; i < 1000 && ioread32be(ipc + WDMC_IPC_AUDIO_RPC_FLAG); i++)
+				mdelay(1);
+			if (i < 1000)
+				break;
+			/* Not taken: undo the loopback to say so, then ask again */
+			if (uart)
+				writel(mcr, uart + WDMC_UART_MCR);
+			pr_emerg("wdmc-poweroff: attempt %d/%d: the audio CPU did not take the request: rpc=%08x mask=%08x flag=%08x\n",
+				 attempt, WDMC_IPC_ATTEMPTS,
+				 ioread32be(ipc + WDMC_IPC_AUDIO_RPC_FLAG),
+				 ioread32be(ipc + WDMC_IPC_SUSPEND_MASK),
+				 ioread32be(ipc + WDMC_IPC_SUSPEND_FLAG));
+		}
 		/* Still running means the power was not cut: undo the loopback to say why */
 		if (uart)
 			writel(mcr, uart + WDMC_UART_MCR);
-		pr_emerg("wdmc-poweroff: the audio CPU %s the power-off request (%d ms): rpc=%08x mask=%08x flag=%08x\n",
-			 i < 1000 ? "took" : "did not take", i,
+		pr_emerg("wdmc-poweroff: the audio CPU %s the power-off request (attempt %d, %d ms): rpc=%08x mask=%08x flag=%08x\n",
+			 attempt <= WDMC_IPC_ATTEMPTS ? "took" : "never took", attempt, i,
 			 ioread32be(ipc + WDMC_IPC_AUDIO_RPC_FLAG),
 			 ioread32be(ipc + WDMC_IPC_SUSPEND_MASK),
 			 ioread32be(ipc + WDMC_IPC_SUSPEND_FLAG));
