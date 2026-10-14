@@ -115,6 +115,47 @@ struct wdmc_poweroff_data {
 
 static struct wdmc_poweroff_data *wdmc_poweroff;
 
+/*
+ * Variables of the audio firmware's RPC/power task (found by disassembling the
+ * two images in the Duo firmware table, both big-endian MIPS linked at
+ * 0x81b00000, loaded at 0x01b00000): the task runs every few ticks, reads the
+ * request word at IPC+0xd0 (0xdaedXXXX arms it, 0xdeadXXXX asks for suspend)
+ * and only calls its suspend routine when the "busy" word's bit 0 is clear.
+ * The two builds differ in layout, so identify the one in memory first.
+ */
+#define WDMC_FW_VBASE	0x81b00000
+
+static u32 wdmc_fw_word(const u32 *fw, u32 vaddr)
+{
+	return be32_to_cpu(READ_ONCE(fw[(vaddr - WDMC_FW_VBASE) / 4]));
+}
+
+static void wdmc_acpu_fw_vars(struct wdmc_poweroff_data *d, const char *when)
+{
+	const char *which = "unknown";
+	u32 state = 0, busy = 0, ptr = 0;
+
+	if (!d->acpu_fw)
+		return;
+	if (wdmc_fw_word(d->acpu_fw, 0x81b44274) == 0x3c02dead) {
+		which = "audio (913 KB)";
+		state = wdmc_fw_word(d->acpu_fw, 0x81be0ee0);
+		busy = wdmc_fw_word(d->acpu_fw, 0x81bd4b90);
+		ptr = wdmc_fw_word(d->acpu_fw, 0x81bd2e70);
+	} else if (wdmc_fw_word(d->acpu_fw, 0x81bc19c8) == 0x3c17dead) {
+		which = "gold (3.2 MB)";
+		state = wdmc_fw_word(d->acpu_fw, 0x81dbd158);
+		busy = wdmc_fw_word(d->acpu_fw, 0x81d59048);
+		ptr = wdmc_fw_word(d->acpu_fw, 0x81dca77c);
+	}
+	pr_emerg("wdmc-poweroff: ACPU fw (%s): %s: state=%08x busy=%08x (bit0=%u) ipcptr=%08x; ipc[0xd0]=%08x [0x114]=%08x [0x12c]=%08x [0x138]=%08x\n",
+		 when, which, state, busy, busy & 1, ptr,
+		 d->ipc ? ioread32be(d->ipc + 0xd0) : 0,
+		 d->ipc ? ioread32be(d->ipc + 0x114) : 0,
+		 d->ipc ? ioread32be(d->ipc + 0x12c) : 0,
+		 d->ipc ? ioread32be(d->ipc + 0x138) : 0);
+}
+
 static u32 wdmc_acpu_fw_sum(const u32 *fw)
 {
 	u32 sum = 0;
@@ -143,6 +184,7 @@ static void wdmc_acpu_report(struct wdmc_poweroff_data *d, const char *when)
 		 d->ipc ? ioread32be(d->ipc) : 0,
 		 d->ipc ? ioread32be(d->ipc + 0xc4) : 0,
 		 d->ipc ? ioread32be(d->ipc + WDMC_IPC_AUDIO_RPC_FLAG) : 0);
+	wdmc_acpu_fw_vars(d, when);
 	if (d->uart)
 		pr_emerg("wdmc-poweroff: UART0 (%s): lsr=%02x (thre=%u temt=%u) mcr=%02x\n", when,
 			 readl(d->uart + WDMC_UART_LSR), (readl(d->uart + WDMC_UART_LSR) >> 5) & 1,
