@@ -104,9 +104,23 @@ done
 
 kill $(jobs -p) 2>/dev/null || true
 
-cpu_uv=$(read_microvolts "$CPU_SUPP_DIR")
-cur_khz=$(cat "$CPUFREQ_DIR/scaling_cur_freq")
-echo "final cur_freq=$((cur_khz/1000)) MHz, cpudvs readback=${cpu_uv}uV"
+# schedutil is still ramping down right after the load stops, so a frequency
+# read and a voltage read taken a moment apart can land on different OPPs
+# (confirmed on real Duo hardware: freq read 800 MHz, voltage read still at the
+# 1000 MHz OPP's 925000 uV). Let it settle, then only trust a voltage read
+# bracketed by two identical frequency reads.
+sleep 1
+tries=0
+while :; do
+	f1=$(cat "$CPUFREQ_DIR/scaling_cur_freq")
+	cpu_uv=$(read_microvolts "$CPU_SUPP_DIR")
+	cur_khz=$(cat "$CPUFREQ_DIR/scaling_cur_freq")
+	[ "$f1" = "$cur_khz" ] && break
+	tries=$((tries + 1))
+	[ "$tries" -ge 20 ] && { echo "WARNING: frequency never held still across a voltage read (last $f1 -> $cur_khz kHz)"; break; }
+	sleep 0.2
+done
+echo "final cur_freq=$((cur_khz/1000)) MHz, cpudvs readback=${cpu_uv}uV (stable reads: $tries retries)"
 target=$(opp_target_uv "$cur_khz")
 fail=0
 if [ "$target" != 0 ]; then
