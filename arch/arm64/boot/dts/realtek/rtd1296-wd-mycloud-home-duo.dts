@@ -303,11 +303,14 @@
 	};
 
 	/*
-	 * Cosmetic power-off -- see drivers/power/reset/wdmc-poweroff.c for
-	 * the full story on why this isn't a real power cut. reg[0] is the
-	 * pwm@d0 block's own OCD register (4 bytes, all 4 channels packed
-	 * into one word -- see that node's own comment on why this can't be
-	 * an exclusive devm_platform_ioremap_resource() claim).
+	 * Power-off -- see drivers/power/reset/wdmc-poweroff.c. Ported from
+	 * symops/monarch-6.18 PR #6 (audio-CPU "suspend to coolboot" IPC via
+	 * memory-region, then the G2227 regulator driver's coldboot sleep
+	 * states cut the rails); NOT yet verified on real Duo hardware.
+	 * reg[0] is the pwm@d0 block's own OCD register (4 bytes, all 4
+	 * channels packed into one word -- see that node's own comment on why
+	 * this can't be an exclusive devm_platform_ioremap_resource()
+	 * claim); reg[1] is the watchdog control register, reg[2] UART0.
 	 *
 	 * wd,usb-vbus-gpios: misc-gpio (raw MMIO, 0x9801b100/0x9801b110) was
 	 * the first thing tried here and was exhaustively disproven on real
@@ -323,10 +326,13 @@
 	 */
 	poweroff: poweroff@70d0 {
 		compatible = "wd,mycloud-home-poweroff";
-		reg = <0x70d0 0x4>;
+		reg = <0x70d0 0x4>,
+		      <0x7680 0x4>,			/* watchdog control */
+		      <0x7800 0x20>;			/* UART0 */
 		wd,pwm-off-channels = <0 3>; /* SYS LED=0, fan=3 */
 		wd,usb-vbus-gpios = <&rtk_iso_gpio 34 GPIO_ACTIVE_HIGH>,
 				     <&rtk_iso_gpio 26 GPIO_ACTIVE_HIGH>;
+		memory-region = <&rpc_comm>;		/* IPC with the audio CPU */
 		status = "okay";
 	};
 
@@ -665,6 +671,11 @@
 		realtek,pad-driving-hs200 = <1 0xbb 0xbb 0xbb 0x33>;
 		status = "okay";
 	};
+};
+
+/* The power-off driver writes the audio CPU's IPC block, which it reads uncached */
+&rpc_comm {
+	no-map;
 };
 
 &uart0 {
