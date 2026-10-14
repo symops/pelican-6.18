@@ -89,6 +89,12 @@ This board's U-Boot (2015.07, 2016 vintage) copies the loaded Image to the physi
 
 ## 7. Package the boot image
 
+The packaged files go into `usb-payload/` (steps 7-9), which is not in the repository: create it first.
+
+```sh
+mkdir -p usb-payload
+```
+
 **Duo:**
 ```sh
 cp arch/arm64/boot/Image arch/arm64/boot/Image.noinitramfs
@@ -128,6 +134,8 @@ cd initramfs/bin && for a in $(qemu-aarch64 ./busybox --list); do [ -e "$a" ] ||
 
 (use `./busybox --list` directly on an aarch64 host).
 
+In the `open(...)` line replace `<emmc|sata>` with `emmc` for a Duo or `sata` for a Monarch (the file name must be exactly `rescue.root.emmc.cpio.gz_pad.img` or `rescue.root.sata.cpio.gz_pad.img`).
+
 The bootloader's rescue path reads this file as a **fixed 4,194,304-byte block**, regardless of real payload size — the zero-padding to that exact length is mandatory, not cosmetic.
 
 ## 9. Install and package the modules
@@ -135,11 +143,12 @@ The bootloader's rescue path reads this file as a **fixed 4,194,304-byte block**
 ```sh
 rm -rf /tmp/modinstall && mkdir -p /tmp/modinstall
 make -j"$(nproc)" LOCALVERSION= modules_install INSTALL_MOD_PATH=/tmp/modinstall
-( cd /tmp/modinstall/lib/modules && tar -cJf usb-payload/modules.tar.xz . )
+KDIR="$PWD"
+( cd /tmp/modinstall/lib/modules && tar -cJf "$KDIR/usb-payload/modules.tar.xz" . )
 cp .config usb-payload/.config
 ```
 
-Archiving from *inside* `lib/modules/` (not with `lib/modules/` as a prefix) matters: it makes the tar root `./<kernelrelease>/...`, so `tar -C /lib/modules -xf modules.tar.xz` on the target lands the version directory at the correct path directly.
+`KDIR` keeps the kernel tree's path, because the `tar` runs from another directory and a relative `usb-payload/...` destination would not exist there. Archiving from *inside* `lib/modules/` (not with `lib/modules/` as a prefix) matters: it makes the tar root `./<kernelrelease>/...`, so `tar -C /lib/modules -xf modules.tar.xz` on the target lands the version directory at the correct path directly.
 
 ## 10. Deploy for testing
 

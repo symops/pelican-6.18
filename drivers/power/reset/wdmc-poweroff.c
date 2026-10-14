@@ -1,14 +1,34 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Power-off for WD My Cloud Home (Monarch, RTD1295) and WD My Cloud Home
- * Duo (Pelican, RTD1296), as WD's 4.9 kernel does it: the audio CPU
- * firmware, asked to "suspend to coolboot", puts the G2227 PMIC to sleep,
- * and the PMIC then turns off the rails whose sleep mode the g2227
- * regulator driver set to off at shutdown (the DTS's
- * regulator-state-coldboot nodes -- that driver must be loaded, it is a
- * module on Pelican). Before that this driver turns off what the SoC
- * drives directly and disarms the watchdog. Ported from
- * symops/monarch-6.18 PR #6; NOT yet verified on real Duo hardware:
+ * Duo (Pelican, RTD1296). The same file is used by both repositories
+ * (symops/monarch-6.18 and symops/pelican-6.18): keep them identical.
+ *
+ * It runs from a SYS_OFF_MODE_POWER_OFF_PREPARE handler, after
+ * device_shutdown() (so the disks are stopped), in process context with
+ * interrupts on, as the interrupt-driven I2C driver needs:
+ *
+ *  1. turn off what the SoC drives directly and disarm the watchdog
+ *     (listed below);
+ *  2. cut every rail through the G2227 PMIC: writing 0 to its ONOFF
+ *     register over I2C removes the power from the whole board, 3.3 V and
+ *     the ISO domain included, at the same moment. Confirmed on a Duo
+ *     (0 W, normal start afterwards) and on a Monarch. Leaving 3.3 V and
+ *     ISO on while the rest collapses is NOT an alternative: on a Duo it
+ *     left the board at ~4 W with the fan at full speed and the flash
+ *     busy, because the isolation the audio CPU performs before its
+ *     coolboot was missing;
+ *  3. only if the PMIC could not be reached (its drivers are modules and
+ *     must be loaded): ask the audio CPU firmware, as WD's 4.9 kernel
+ *     does, to "suspend to coolboot"; the PMIC then turns off the rails
+ *     whose sleep mode the g2227 regulator driver set to off at shutdown.
+ *     That route works most of the time, but the audio CPU's firmware
+ *     sometimes hangs on real hardware (it neither reads the RPC flag nor
+ *     acknowledges the SB2 doorbell, and restarting it crashes it) and the
+ *     board then stays powered (~1.4 W on Monarch, ~1.7 W on Duo) until the
+ *     mains is cut -- which is why the PMIC comes first.
+ *
+ * What the SoC drives directly:
  *
  *  - PWM channel(s) for the SYS LED (and fan, Duo only): the OCD
  *    register (offset 0x0 within the pwm@d0 block) with 0 written to a
@@ -44,9 +64,20 @@
  *    rtk_iso_gpio is already a proper mainline gpiolib controller
  *    (drivers/gpio/gpio-rtd.c) with no competing exclusive claim on
  *    either line (only line 20, the Reset button, is otherwise spoken
- *    for). Monarch's split is different (one port on misc-gpio) and is
- *    handled by that board's own copy of this driver; nothing misc-gpio
- *    related is needed here.
+ *    for). Monarch's stock-firmware log shows a completely different
+ *    split: one port on a single misc-gpio bit (19), the other two
+ *    (sharing one physical port) on rtk_iso_gpio line 1. All of them are
+ *    wd,usb-vbus-gpios: this driver holds them high while the system runs
+ *    and drives them low at power-off.
+ *
+ *  - Drive-bay supplies (optional, wd,misc-gpio-hdd-bits): on Monarch the
+ *    drive's supply belongs to ahci_rtd1295 (a gpiod "power" line it
+ *    lowers at shutdown), so this is not used there. On Duo the bay
+ *    supplies are misc-gpio bits that ahci_rtd1295 raises at boot with raw
+ *    MMIO and this driver cuts the same way (DIR/DATO registers, given as
+ *    reg[3]/reg[4]); without that the board kept drawing power
+ *    proportional to the number of disks fitted after "shutdown -P" (about
+ *    2.6 W with one disk, 3.9 W with two).
  *
  * Real disk spin-down is handled separately, through the SCSI layer's
  * own existing sd_shutdown() mechanism (the manage_shutdown sysfs
@@ -224,7 +255,7 @@ static void wdmc_pmic_cut(struct wdmc_poweroff_data *d)
 		return;
 	pmic = of_find_i2c_device_by_node(d->pmic);
 	if (!pmic) {
-		pr_emerg("wdmc-poweroff: no PMIC on I2C (the PMIC modules are not loaded?), cannot cut the rails\n");
+		pr_emerg("wdmc-poweroff: no PMIC on I2C (the PMIC modules are not loaded?), falling back to the audio CPU\n");
 		return;
 	}
 	onoff = i2c_smbus_read_byte_data(pmic, G2227_REG_ONOFF);
@@ -414,5 +445,5 @@ static struct platform_driver wdmc_poweroff_driver = {
 };
 module_platform_driver(wdmc_poweroff_driver);
 
-MODULE_DESCRIPTION("Power-off (audio CPU coolboot + LED/fan/USB VBUS) for WD My Cloud Home / Duo");
+MODULE_DESCRIPTION("Power-off for WD My Cloud Home / Duo: PMIC rail cut, audio CPU coolboot as fallback");
 MODULE_LICENSE("GPL");
