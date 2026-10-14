@@ -142,27 +142,42 @@
 		interrupt-parent = <&mux_intc>;
 		interrupts = <1 8>;
 		i2c-num = <0>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&i2c0_pins>;
 		status = "okay";
 		#address-cells = <1>;
 		#size-cells = <0>;
 
-		pmic@12 {
+		pmic: pmic@12 {
 			compatible = "gmt,g2227";
 			reg = <0x12>;
 			status = "okay";
 
+			/*
+			 * Regulator values ported from symops/monarch-6.18#9
+			 * (same G2227 PMIC, same reg=0x12 on i2c0 -- confirmed
+			 * identical wiring on this board's own DTS). NOT
+			 * independently verified on real Duo/RTD1296 hardware:
+			 * before trusting this in production, repeat PR #9's
+			 * own test methodology here (OPP sweeps up/down incl.
+			 * 1400->600 direct, both rails read back at each step,
+			 * a sustained multi-core stress test with the OPP
+			 * changing at random, reboot/poweroff still working,
+			 * and NFS/disk throughput unaffected) -- see
+			 * docs/pr-6-9-duo-adaptation-plan.md.
+			 */
 			regulators {
 				compatible = "gmt,g2227-regulator";
 				status = "okay";
 
-				dc1 { regulator-boot-on; regulator-always-on; regulator-name = "vd33"; regulator-min-microvolt = <3000000>; regulator-max-microvolt = <3300000>; regulator-initial-mode = <1>; };
-				dc2 { regulator-boot-on; regulator-always-on; regulator-name = "cpudvs"; regulator-min-microvolt = <800000>; regulator-max-microvolt = <1187500>; regulator-initial-mode = <0>; regulator-state-mem { regulator-off-in-suspend; }; };
-				dc3 { regulator-boot-on; regulator-always-on; regulator-name = "gpudvs"; regulator-min-microvolt = <800000>; regulator-max-microvolt = <1187500>; regulator-initial-mode = <0>; regulator-ramp-delay = <625>; regulator-state-mem { regulator-off-in-suspend; }; };
+				dc1 { regulator-boot-on; regulator-always-on; regulator-name = "vd33"; regulator-min-microvolt = <3300000>; regulator-max-microvolt = <3300000>; regulator-initial-mode = <1>; };
+				cpu_supp: dc2 { regulator-boot-on; regulator-always-on; regulator-name = "cpudvs"; regulator-min-microvolt = <825000>; regulator-max-microvolt = <1100000>; regulator-ramp-delay = <300>; regulator-coupled-with = <&l2_supp>; regulator-coupled-max-spread = <100000>; regulator-initial-mode = <0>; regulator-state-coldboot { regulator-off-in-suspend; }; };
+				dc3 { regulator-boot-on; regulator-always-on; regulator-name = "gpudvs"; regulator-min-microvolt = <1000000>; regulator-max-microvolt = <1000000>; regulator-initial-mode = <0>; regulator-ramp-delay = <625>; regulator-state-coldboot { regulator-off-in-suspend; }; };
 				dc4 { regulator-boot-on; regulator-always-on; regulator-name = "ddr"; regulator-min-microvolt = <1500000>; regulator-max-microvolt = <1500000>; regulator-initial-mode = <0>; regulator-state-coldboot { regulator-off-in-suspend; }; };
-				dc5 { regulator-boot-on; regulator-always-on; regulator-name = "iso"; regulator-min-microvolt = <800000>; regulator-max-microvolt = <1187500>; regulator-initial-mode = <0>; };
-				dc6 { regulator-boot-on; regulator-always-on; regulator-name = "top"; regulator-min-microvolt = <800000>; regulator-max-microvolt = <1187500>; regulator-initial-mode = <0>; regulator-state-mem { regulator-off-in-suspend; }; };
-				ldo2 { regulator-boot-on; regulator-always-on; regulator-name = "ldo2"; regulator-min-microvolt = <1500000>; regulator-max-microvolt = <1900000>; regulator-initial-mode = <0>; regulator-state-mem { regulator-off-in-suspend; }; };
-				ldo3 { regulator-boot-on; regulator-always-on; regulator-name = "ldo3"; regulator-min-microvolt = <800000>; regulator-max-microvolt = <1200000>; regulator-initial-mode = <0>; regulator-state-mem { regulator-off-in-suspend; }; };
+				dc5 { regulator-boot-on; regulator-always-on; regulator-name = "iso"; regulator-min-microvolt = <1000000>; regulator-max-microvolt = <1000000>; regulator-initial-mode = <0>; };
+				dc6 { regulator-boot-on; regulator-always-on; regulator-name = "top"; regulator-min-microvolt = <1000000>; regulator-max-microvolt = <1000000>; regulator-initial-mode = <0>; regulator-state-coldboot { regulator-off-in-suspend; }; };
+				ldo2 { regulator-boot-on; regulator-always-on; regulator-name = "ldo2"; regulator-min-microvolt = <1800000>; regulator-max-microvolt = <1800000>; regulator-initial-mode = <0>; regulator-state-coldboot { regulator-off-in-suspend; }; };
+				l2_supp: ldo3 { regulator-boot-on; regulator-always-on; regulator-name = "ldo3"; regulator-min-microvolt = <900000>; regulator-max-microvolt = <1000000>; regulator-ramp-delay = <300>; regulator-coupled-with = <&cpu_supp>; regulator-coupled-max-spread = <100000>; regulator-initial-mode = <0>; regulator-state-coldboot { regulator-off-in-suspend; }; };
 			};
 		};
 	};
@@ -288,11 +303,14 @@
 	};
 
 	/*
-	 * Cosmetic power-off -- see drivers/power/reset/wdmc-poweroff.c for
-	 * the full story on why this isn't a real power cut. reg[0] is the
-	 * pwm@d0 block's own OCD register (4 bytes, all 4 channels packed
-	 * into one word -- see that node's own comment on why this can't be
-	 * an exclusive devm_platform_ioremap_resource() claim).
+	 * Power-off -- see drivers/power/reset/wdmc-poweroff.c. Ported from
+	 * symops/monarch-6.18 PR #6 (audio-CPU "suspend to coolboot" IPC via
+	 * memory-region, then the G2227 regulator driver's coldboot sleep
+	 * states cut the rails); NOT yet verified on real Duo hardware.
+	 * reg[0] is the pwm@d0 block's own OCD register (4 bytes, all 4
+	 * channels packed into one word -- see that node's own comment on why
+	 * this can't be an exclusive devm_platform_ioremap_resource()
+	 * claim); reg[1] is the watchdog control register, reg[2] UART0.
 	 *
 	 * wd,usb-vbus-gpios: misc-gpio (raw MMIO, 0x9801b100/0x9801b110) was
 	 * the first thing tried here and was exhaustively disproven on real
@@ -308,10 +326,17 @@
 	 */
 	poweroff: poweroff@70d0 {
 		compatible = "wd,mycloud-home-poweroff";
-		reg = <0x70d0 0x4>;
+		reg = <0x70d0 0x4>,
+		      <0x7680 0x4>,			/* watchdog control */
+		      <0x7800 0x20>,			/* UART0 */
+		      <0x1b104 0x4>,			/* misc-gpio bank 1 DIR */
+		      <0x1b114 0x4>;			/* misc-gpio bank 1 DATO */
+		wd,misc-gpio-hdd-bits = <28 30>;	/* drive-bay supplies, misc-gpio 60/62, high = on */
 		wd,pwm-off-channels = <0 3>; /* SYS LED=0, fan=3 */
 		wd,usb-vbus-gpios = <&rtk_iso_gpio 34 GPIO_ACTIVE_HIGH>,
 				     <&rtk_iso_gpio 26 GPIO_ACTIVE_HIGH>;
+		memory-region = <&rpc_comm>;		/* IPC with the audio CPU */
+		wd,pmic = <&pmic>;			/* its ONOFF register cuts the rails if the audio CPU does not */
 		status = "okay";
 	};
 
@@ -652,6 +677,11 @@
 	};
 };
 
+/* The power-off driver writes the audio CPU's IPC block, which it reads uncached */
+&rpc_comm {
+	no-map;
+};
+
 &uart0 {
 	interrupt-parent = <&mux_intc>;
 	interrupts = <1 2>;
@@ -772,6 +802,20 @@
 };
 
 &iso {
+	/* No RTD1296 pin controller in 6.18; U-Boot leaves I2C0's pads as GPIOs.
+	 * Ported from symops/monarch-6.18#9 -- same ISO block layout. */
+	pinmux@310 {
+		compatible = "pinctrl-single";
+		reg = <0x310 0x4>;
+		#pinctrl-cells = <1>;
+		pinctrl-single,register-width = <32>;
+		pinctrl-single,function-mask = <0x03c00000>;
+
+		i2c0_pins: i2c0-pins {
+			pinctrl-single,pins = <0x0 0x01400000>;	/* SCL, SDA: I2C */
+		};
+	};
+
 	pwm: pwm@d0 {
 		compatible = "realtek,rtd129x-pwm";
 		reg = <0xd0 0xc>;
@@ -935,60 +979,79 @@
 
 &cpu0 {
 	clocks = <&scpu_clk>;
+	cpu-supply = <&cpu_supp>;
 	#cooling-cells = <2>;
 	operating-points-v2 = <&cpu_opps>;
 };
 
 &cpu1 {
 	clocks = <&scpu_clk>;
+	cpu-supply = <&cpu_supp>;
 	#cooling-cells = <2>;
 	operating-points-v2 = <&cpu_opps>;
 };
 
 &cpu2 {
 	clocks = <&scpu_clk>;
+	cpu-supply = <&cpu_supp>;
 	#cooling-cells = <2>;
 	operating-points-v2 = <&cpu_opps>;
 };
 
 &cpu3 {
 	clocks = <&scpu_clk>;
+	cpu-supply = <&cpu_supp>;
 	#cooling-cells = <2>;
 	operating-points-v2 = <&cpu_opps>;
 };
 
 /*
- * Same divider-only cpufreq scheme as Monarch. Confirmed on real Duo
- * hardware: the boot loader actually leaves PLL_SCPU decoding to
- * 600000 kHz (1200 MHz PLL / div2 -- not exactly the 1201.5 MHz
- * Monarch's comment describes, but the same table entry), which
- * cpufreq_policy_online logs as an "unlisted initial frequency" and
- * snaps to the nearest OPP (600750 kHz) at boot -- a normal, harmless
- * cpufreq-core step, not a bug. schedutil subsequently drove a real
- * scale-up to the top OPP (1100000 kHz), the code path that both
- * reprograms the PLL NF register *and* changes the post-divider
- * (2 -> 1, anti-glitch ordered): confirmed via cpuinfo_cur_freq
- * reading back 1100000 straight from hardware after the transition,
- * with the board still responsive. Full OPP range exercised, no hang.
+ * OPP table ported from symops/monarch-6.18#9 (WD's own 600-1400 MHz
+ * points at 825-1100 mV, Monarch/RTD1295). The old divider-only table
+ * above this comment (300.375/600.75/1100 MHz, no opp-microvolt) was
+ * this board's previous, PMIC-independent scheme; confirmed working on
+ * real Duo hardware (see the removed comment in git history). This new
+ * table sets the cpudvs rail (DC2) via the OPPs and needs the L2 rail
+ * (LDO3) to follow through regulator coupling -- NEITHER THE VOLTAGE
+ * TABLE NOR THE COUPLING BEHAVIOR HAS BEEN VERIFIED ON REAL RTD1296
+ * SILICON. RTD1296 may have different voltage/binning requirements
+ * than RTD1295. Do not trust this in production before repeating PR
+ * #9's own test methodology on actual Duo hardware -- see
+ * docs/pr-6-9-duo-adaptation-plan.md for the specific checklist.
  */
 / {
 	cpu_opps: opp-table-cpu {
 		compatible = "operating-points-v2";
 		opp-shared;
 
-		opp-300375000 {
-			opp-hz = /bits/ 64 <300375000>;
-			clock-latency-ns = <150000>;
-		};
-
-		opp-600750000 {
-			opp-hz = /bits/ 64 <600750000>;
-			clock-latency-ns = <150000>;
+		opp-600000000 {
+			opp-hz = /bits/ 64 <600000000>;
+			opp-microvolt = <825000 825000 1100000>;
+			clock-latency-ns = <300000>;
 			opp-suspend;
 		};
 
-		opp-1100000000 {
-			opp-hz = /bits/ 64 <1100000000>;
+		opp-800000000 {
+			opp-hz = /bits/ 64 <800000000>;
+			opp-microvolt = <875000 875000 1100000>;
+			clock-latency-ns = <300000>;
+		};
+
+		opp-1000000000 {
+			opp-hz = /bits/ 64 <1000000000>;
+			opp-microvolt = <925000 925000 1100000>;
+			clock-latency-ns = <300000>;
+		};
+
+		opp-1200000000 {
+			opp-hz = /bits/ 64 <1200000000>;
+			opp-microvolt = <1012500 1012500 1100000>;
+			clock-latency-ns = <300000>;
+		};
+
+		opp-1400000000 {
+			opp-hz = /bits/ 64 <1400000000>;
+			opp-microvolt = <1100000 1100000 1100000>;
 			clock-latency-ns = <300000>;
 		};
 	};

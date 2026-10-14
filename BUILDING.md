@@ -34,6 +34,25 @@ make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- olddefconfig
 
 `olddefconfig` resolves any new Kconfig symbols introduced since that release against their defaults — always run it after fetching an older `.config`.
 
+### Duo: required `.config` settings
+
+These matter for a Duo (Pelican) build; the release `default.config` plus the following is the verified recipe:
+
+| Symbol | Value | Why |
+|---|---|---|
+| `CONFIG_PINCTRL_SINGLE` | `m` | I2C0 pinmux for the PMIC (DTS `pinmux@310`) |
+| `CONFIG_MFD_G2227_I2C` | `m` | G2227 PMIC core |
+| `CONFIG_REGULATOR_G2227` | `m` | PMIC regulators: DVFS (`cpu-supply`) and the power-off rail shutdown |
+| `CONFIG_I2C_RTK` | `m` | I2C0 controller |
+| `CONFIG_MQ_IOSCHED_DEADLINE` | `y` | otherwise block devices come up with scheduler `none` |
+| `CONFIG_RT_GROUP_SCHED` | not set | systemd wants it off |
+
+**The three PMIC drivers must be modules, not built in.** Built in (about +16 KB in `vmlinux`) they bring back the CPU0 hang (`port 0 is not capable of FBS` followed by an RCU stall with CPU0 stuck in `do_idle()`), because the idle-loop nop workaround (`.rept 100` in `kernel/sched/idle.c`) is layout-sensitive and only happens to work for the module layout. Bisected on real hardware: PR #7 alone boots, the four drivers built in hang, PMIC/OPP DTS with the drivers as modules boots. Changing the nop count (100, 1000, 10000) did not help. Do not flip these to `=y` without re-testing a full boot.
+
+Consequences of the modules: the PMIC, DVFS (`cpufreq-dt` stays in deferred probe until `g2227-regulator` loads, about 37 s into boot with udev) and the real power-off (the g2227 driver's coldboot sleep states cut the rails at `shutdown`) only work once the modules are loaded. The rescue initrd does not load them, so `cpufreq-dt: deferred probe pending` there is expected.
+
+**Always pass `ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu-` to every `make`, including `olddefconfig`.** A `make` run without `ARCH` configures against the host (x86) Kconfig and silently strips the board options from `.config` (`ARCH_REALTEK`, `IRQ_RTD129X_MUX`, `CMDLINE`, ...): no UART console, `dw-apb-uart: IRQ index 0 not found`, `/init` exits at once. If a boot looks like that, check `grep -E 'ARCH_REALTEK|IRQ_RTD129X_MUX|^CONFIG_CMDLINE=' .config` and re-fetch `default.config`.
+
 ## 4. Build the kernel, modules, and device trees
 
 ```sh
@@ -100,6 +119,14 @@ open('usb-payload/rescue.root.<emmc|sata>.cpio.gz_pad.img', 'wb').write(
     data + b'\0' * (target - len(data)))
 "
 ```
+
+`initramfs/bin/` carries a symlink to `/bin/busybox` for every applet of the bundled static busybox (`busybox --list`, ~400 of them). The init script and the rescue shell rely on them (`insmod`, `grep`, `sed`, `ip`, `udhcpc`, `telnetd`, ...): this busybox is not built with `FEATURE_SH_STANDALONE`, so without the links they fail with `not found`. After replacing `bin/busybox` with a build that has a different applet set, re-create the links with:
+
+```sh
+cd initramfs/bin && for a in $(qemu-aarch64 ./busybox --list); do [ -e "$a" ] || [ "$a" = busybox ] || [ "$a" = init ] || ln -s /bin/busybox "$a"; done
+```
+
+(use `./busybox --list` directly on an aarch64 host).
 
 The bootloader's rescue path reads this file as a **fixed 4,194,304-byte block**, regardless of real payload size — the zero-padding to that exact length is mandatory, not cosmetic.
 
