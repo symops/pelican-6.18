@@ -46,8 +46,9 @@ board at 2.6 W with identical logic; the cause of that one-off was not found
 `ahci_rtd1295.c` at boot) are also switched off in `wdmc-poweroff.c`
 (`wd,misc-gpio-hdd-bits`): without it the board kept drawing power
 proportional to the number of disks fitted after `shutdown -P` (about 2.6 W
-with one disk, 3.9 W with two). The original analysis below is kept for
-context.
+with one disk, 3.9 W with two). Confirmed on hardware (build #208): with
+the bay supplies cut it powers off to 0 W with two disks fitted. The
+original analysis below is kept for context.
 
 **Originally not applied.** Plausible in principle (the underlying `rpc_comm` IPC
 region is a SoC-level node in the shared `rtd129x.dtsi`, present on both
