@@ -90,15 +90,6 @@
 
 /* How many times the power-off request is sent (1 s each) if the audio CPU does not answer */
 #define WDMC_IPC_ATTEMPTS	3
-/*
- * What the vendor 4.9 kernel does in rtk_rpc_pm_shutdown() on top of the plain
- * request: the audio RPC flag first gets 0xdaedffff ("stop audio has_check", the
- * firmware acks by clearing it), then 0xdeadffff, and the SB2 doorbell
- * (SB2_INT at 0x9801a104, RPC_INT_SA | RPC_INT_WRITE_1) interrupts the audio CPU.
- */
-#define WDMC_RPC_INT_BASE	0x9801a104
-#define WDMC_RPC_INT_SA		BIT(1)
-#define WDMC_RPC_INT_WRITE_1	BIT(0)
 
 /* struct rtk_ipc_shm (WD 4.9 rtk_ipc_shm.h) at 0xc4 into the RPC page, big-endian */
 #define WDMC_IPC_AUDIO_RPC_FLAG	(0xc4 + 0x0c)
@@ -118,7 +109,6 @@ struct wdmc_poweroff_data {
 	void __iomem *crt_clock2;
 	const u32 *acpu_fw;
 	struct gpio_desc *sleep_gpio;
-	void __iomem *rpc_int;
 	unsigned int pwm_channels[WDMC_MAX_PWM_CHANNELS];
 	unsigned int n_pwm_channels;
 };
@@ -158,13 +148,12 @@ static void wdmc_acpu_fw_vars(struct wdmc_poweroff_data *d, const char *when)
 		busy = wdmc_fw_word(d->acpu_fw, 0x81d59048);
 		ptr = wdmc_fw_word(d->acpu_fw, 0x81dca77c);
 	}
-	pr_emerg("wdmc-poweroff: ACPU fw (%s): %s: state=%08x busy=%08x (bit0=%u) ipcptr=%08x; ipc[0xd0]=%08x [0x114]=%08x [0x12c]=%08x [0x138]=%08x [0x104]=%08x\n",
+	pr_emerg("wdmc-poweroff: ACPU fw (%s): %s: state=%08x busy=%08x (bit0=%u) ipcptr=%08x; ipc[0xd0]=%08x [0x114]=%08x [0x12c]=%08x [0x138]=%08x\n",
 		 when, which, state, busy, busy & 1, ptr,
 		 d->ipc ? ioread32be(d->ipc + 0xd0) : 0,
 		 d->ipc ? ioread32be(d->ipc + 0x114) : 0,
 		 d->ipc ? ioread32be(d->ipc + 0x12c) : 0,
-		 d->ipc ? ioread32be(d->ipc + 0x138) : 0,
-		 d->ipc ? ioread32be(d->ipc + 0x104) : 0);
+		 d->ipc ? ioread32be(d->ipc + 0x138) : 0);
 }
 
 static u32 wdmc_acpu_fw_sum(const u32 *fw)
@@ -200,19 +189,6 @@ static void wdmc_acpu_report(struct wdmc_poweroff_data *d, const char *when)
 		pr_emerg("wdmc-poweroff: UART0 (%s): lsr=%02x (thre=%u temt=%u) mcr=%02x\n", when,
 			 readl(d->uart + WDMC_UART_LSR), (readl(d->uart + WDMC_UART_LSR) >> 5) & 1,
 			 (readl(d->uart + WDMC_UART_LSR) >> 6) & 1, readl(d->uart + WDMC_UART_MCR));
-}
-
-/* Wait up to ms for the audio CPU to clear the RPC flag; returns the ms it took, or -1 */
-static int wdmc_rpc_flag_wait(void __iomem *ipc, int ms)
-{
-	int i;
-
-	for (i = 0; i < ms; i++) {
-		if (!ioread32be(ipc + WDMC_IPC_AUDIO_RPC_FLAG))
-			return i;
-		mdelay(1);
-	}
-	return -1;
 }
 
 static void wdmc_poweroff_handler(void)
@@ -303,41 +279,6 @@ static void wdmc_poweroff_handler(void)
 		/* Still running means the power was not cut: undo the loopback to say why */
 		if (uart)
 			writel(mcr, uart + WDMC_UART_MCR);
-		if (attempt > WDMC_IPC_ATTEMPTS) {
-			/*
-			 * The plain request was never taken. Try the vendor's own
-			 * sequence and report what each step gets: 0xdaedffff and wait,
-			 * then 0xdeadffff with the SB2 doorbell.
-			 */
-			int w;
-
-			pr_emerg("wdmc-poweroff: trying the vendor sequence (daed, then dead + doorbell)\n");
-			iowrite32be(0xdaedffff, ipc + WDMC_IPC_AUDIO_RPC_FLAG);
-			w = wdmc_rpc_flag_wait(ipc, 500);
-			pr_emerg("wdmc-poweroff: 0xdaedffff %s (%d ms): rpc=%08x\n", w >= 0 ? "ACKED" : "not acked", w,
-				 ioread32be(ipc + WDMC_IPC_AUDIO_RPC_FLAG));
-			if (wdmc_poweroff->rpc_int) {
-				writel(WDMC_RPC_INT_SA | WDMC_RPC_INT_WRITE_1, wdmc_poweroff->rpc_int);
-				pr_emerg("wdmc-poweroff: rang the SB2 doorbell, SB2_INT=%08x INT_EN=%08x INT_ST=%08x\n",
-					 readl(wdmc_poweroff->rpc_int), readl(wdmc_poweroff->rpc_int + 4),
-					 readl(wdmc_poweroff->rpc_int + 8));
-			}
-			if (uart)
-				writel((mcr | WDMC_UART_MCR_LOOP | WDMC_UART_MCR_RTS | WDMC_UART_MCR_DTR) &
-				       ~WDMC_UART_MCR_AFCE, uart + WDMC_UART_MCR);
-			iowrite32be(0x00020000, ipc + WDMC_IPC_SUSPEND_MASK);
-			iowrite32be(0x40000002, ipc + WDMC_IPC_SUSPEND_FLAG);
-			iowrite32be(0xdeadffff, ipc + WDMC_IPC_AUDIO_RPC_FLAG);
-			if (wdmc_poweroff->rpc_int)
-				writel(WDMC_RPC_INT_SA | WDMC_RPC_INT_WRITE_1, wdmc_poweroff->rpc_int);
-			w = wdmc_rpc_flag_wait(ipc, 1500);
-			if (uart)
-				writel(mcr, uart + WDMC_UART_MCR);
-			pr_emerg("wdmc-poweroff: 0xdeadffff after the doorbell: %s (%d ms): rpc=%08x\n",
-				 w >= 0 ? "TAKEN" : "still not taken", w, ioread32be(ipc + WDMC_IPC_AUDIO_RPC_FLAG));
-			if (w >= 0)
-				attempt = WDMC_IPC_ATTEMPTS;	/* count it as taken */
-		}
 		if (attempt > WDMC_IPC_ATTEMPTS && wdmc_poweroff->sleep_gpio) {
 			/*
 			 * The audio CPU's last act is to pull ISO GPIO 0, the PMIC's sleep
@@ -436,7 +377,6 @@ static int wdmc_poweroff_probe(struct platform_device *pdev)
 		data->sleep_gpio = NULL;
 	}
 
-	data->rpc_int = devm_ioremap(dev, WDMC_RPC_INT_BASE, 12);
 	/* Diagnostic views of the audio CPU's state (read-only) */
 	data->crt_reset2 = devm_ioremap(dev, WDMC_CRT_SOFT_RESET2, 4);
 	data->crt_clock2 = devm_ioremap(dev, WDMC_CRT_CLOCK_ENABLE2, 4);
