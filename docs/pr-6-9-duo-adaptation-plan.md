@@ -42,7 +42,11 @@ as in Monarch's PR #6 without #8's misc-gpio. The PMIC rails go off through
 the g2227 regulator driver's `regulator-state-coldboot` states, so that
 driver (a module on Pelican) must be loaded. An earlier test build left the
 board at 2.6 W with identical logic; the cause of that one-off was not found
-(see the history of this branch). The original analysis below is kept for
+(see the history of this branch). The drive-bay supplies (misc-gpio 60/62, raised by
+`ahci_rtd1295.c` at boot) are also switched off in `wdmc-poweroff.c`
+(`wd,misc-gpio-hdd-bits`): without it the board kept drawing power
+proportional to the number of disks fitted after `shutdown -P` (about 2.6 W
+with one disk, 3.9 W with two). The original analysis below is kept for
 context.
 
 **Originally not applied.** Plausible in principle (the underlying `rpc_comm` IPC

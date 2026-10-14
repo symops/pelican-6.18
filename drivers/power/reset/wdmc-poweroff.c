@@ -82,6 +82,9 @@
 struct wdmc_poweroff_data {
 	void __iomem *pwm_base;
 	struct gpio_descs *usb_vbus_gpios;
+	void __iomem *hdd_dir;
+	void __iomem *hdd_dato;
+	u32 hdd_mask;
 	void __iomem *wdt_ctl;
 	void __iomem *uart;
 	void __iomem *ipc;
@@ -116,6 +119,14 @@ static void wdmc_poweroff_handler(void)
 		 */
 		for (i = 0; i < wdmc_poweroff->usb_vbus_gpios->ndescs; i++)
 			gpiod_direction_output(wdmc_poweroff->usb_vbus_gpios->desc[i], 0);
+	}
+
+	if (wdmc_poweroff->hdd_mask) {
+		/* Drive-bay supplies (active high); the disks were stopped by sd_shutdown() */
+		val = readl(wdmc_poweroff->hdd_dir);
+		writel(val | wdmc_poweroff->hdd_mask, wdmc_poweroff->hdd_dir);
+		val = readl(wdmc_poweroff->hdd_dato);
+		writel(val & ~wdmc_poweroff->hdd_mask, wdmc_poweroff->hdd_dato);
 	}
 
 	if (wdmc_poweroff->wdt_ctl) {
@@ -178,6 +189,33 @@ static int wdmc_poweroff_probe(struct platform_device *pdev)
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 2);
 	if (res && !(data->uart = devm_ioremap(dev, res->start, resource_size(res))))
 		return -ENOMEM;
+
+	/*
+	 * reg[3]/reg[4]: misc-gpio DIR/DATO of the bank holding the drive-bay
+	 * supplies, wd,misc-gpio-hdd-bits: their bit numbers within that bank.
+	 * Raw MMIO, like ahci_rtd1295.c, which raised these lines at boot.
+	 */
+	ret = of_property_count_u32_elems(dev->of_node, "wd,misc-gpio-hdd-bits");
+	if (ret > 0) {
+		res = platform_get_resource(pdev, IORESOURCE_MEM, 3);
+		if (!res)
+			return dev_err_probe(dev, -EINVAL, "wd,misc-gpio-hdd-bits needs reg[3] (DIR)\n");
+		data->hdd_dir = devm_ioremap(dev, res->start, resource_size(res));
+		res = platform_get_resource(pdev, IORESOURCE_MEM, 4);
+		if (!res)
+			return dev_err_probe(dev, -EINVAL, "wd,misc-gpio-hdd-bits needs reg[4] (DATO)\n");
+		data->hdd_dato = devm_ioremap(dev, res->start, resource_size(res));
+		if (!data->hdd_dir || !data->hdd_dato)
+			return -ENOMEM;
+		for (i = 0; i < ret; i++) {
+			u32 bit;
+
+			of_property_read_u32_index(dev->of_node, "wd,misc-gpio-hdd-bits", i, &bit);
+			if (bit >= 32)
+				return dev_err_probe(dev, -EINVAL, "bad wd,misc-gpio-hdd-bits\n");
+			data->hdd_mask |= BIT(bit);
+		}
+	}
 
 	/* The RPC page must be no-map: the audio CPU reads it uncached */
 	rmem = of_parse_phandle(dev->of_node, "memory-region", 0);

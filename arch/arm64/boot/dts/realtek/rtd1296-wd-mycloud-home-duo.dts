@@ -328,7 +328,10 @@
 		compatible = "wd,mycloud-home-poweroff";
 		reg = <0x70d0 0x4>,
 		      <0x7680 0x4>,			/* watchdog control */
-		      <0x7800 0x20>;			/* UART0 */
+		      <0x7800 0x20>,			/* UART0 */
+		      <0x1b104 0x4>,			/* misc-gpio bank 1 DIR */
+		      <0x1b114 0x4>;			/* misc-gpio bank 1 DATO */
+		wd,misc-gpio-hdd-bits = <28 30>;	/* drive-bay supplies, misc-gpio 60/62, high = on */
 		wd,pwm-off-channels = <0 3>; /* SYS LED=0, fan=3 */
 		wd,usb-vbus-gpios = <&rtk_iso_gpio 34 GPIO_ACTIVE_HIGH>,
 				     <&rtk_iso_gpio 26 GPIO_ACTIVE_HIGH>;
