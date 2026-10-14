@@ -161,3 +161,15 @@ this document; see `opp-verify/README.md` for requirements and usage.
 Until this checklist has been run on real Duo hardware, treat the OPP
 voltage values as a reasonable starting point ported from a related but
 not identical chip, not as validated for production.
+
+## Issue #4 (reserve the ACPU's IDMEM and boot vector) -- not needed
+
+symops/monarch-6.18#4 asked whether `acpu-idmem@10000000` and
+`acpu-bootcode@1fc00000` should be reserved `no-map` as in the vendor DTS.
+Its author checked on real hardware (Monarch, normal boot, WD's audio
+firmware running) that neither region is DRAM the ACPU uses: the 0x10000000
+window is U-Boot's exported environment plus stale data, 0x1fc00000 is stale
+data, and the ACPU's own 0x10000000 is separate (on-chip) memory. The issue
+was closed and the reservations dropped, so none are carried here. Duo runs
+the same firmware family (its power-off talks to the ACPU through `rpc_comm`
+and works), so nothing was added.
