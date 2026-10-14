@@ -137,6 +137,7 @@ static void wdmc_poweroff_handler(void)
 	if (wdmc_poweroff->ipc) {
 		void __iomem *ipc = wdmc_poweroff->ipc;
 		void __iomem *uart = wdmc_poweroff->uart;
+		u32 mcr = 0;
 
 		/* The firmware prints on UART0 before taking the request: loop it back to drain */
 		if (uart) {
@@ -145,8 +146,8 @@ static void wdmc_poweroff_handler(void)
 					break;
 				udelay(10);
 			}
-			val = readl(uart + WDMC_UART_MCR);
-			writel(val | WDMC_UART_MCR_LOOP, uart + WDMC_UART_MCR);
+			mcr = readl(uart + WDMC_UART_MCR);
+			writel(mcr | WDMC_UART_MCR_LOOP, uart + WDMC_UART_MCR);
 		}
 
 		/* Suspend version 2, author SCPU, coolboot; the firmware clears the request */
@@ -155,8 +156,14 @@ static void wdmc_poweroff_handler(void)
 		iowrite32be(0xdeadffff, ipc + WDMC_IPC_AUDIO_RPC_FLAG);
 		for (i = 0; i < 1000 && ioread32be(ipc + WDMC_IPC_AUDIO_RPC_FLAG); i++)
 			mdelay(1);
-		pr_emerg("wdmc-poweroff: the audio CPU %s the power-off request\n",
-			 i < 1000 ? "took" : "did not take");
+		/* Still running means the power was not cut: undo the loopback to say why */
+		if (uart)
+			writel(mcr, uart + WDMC_UART_MCR);
+		pr_emerg("wdmc-poweroff: the audio CPU %s the power-off request (%d ms): rpc=%08x mask=%08x flag=%08x\n",
+			 i < 1000 ? "took" : "did not take", i,
+			 ioread32be(ipc + WDMC_IPC_AUDIO_RPC_FLAG),
+			 ioread32be(ipc + WDMC_IPC_SUSPEND_MASK),
+			 ioread32be(ipc + WDMC_IPC_SUSPEND_FLAG));
 	}
 
 	for (;;)
