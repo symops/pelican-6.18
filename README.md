@@ -88,6 +88,10 @@ identical FDT-reserved-memory layout to Monarch (`addr=2200000 size=400000`),
 so the board DTS uses the same `/memreserve/ 0x02200000 0x00C00000;` +
 `chosen/linux,initrd-start/end` convention, unchanged from Monarch's recipe.
 
+## Build configuration requirements
+
+The PMIC drivers (`PINCTRL_SINGLE`, `MFD_G2227_I2C`, `REGULATOR_G2227`) must be **modules** on this board -- built in, they bring back the CPU0 hang (layout-sensitive idle-loop nop workaround). The full recipe and the reason are in `BUILDING.md` ("Duo: required `.config` settings"). Verified on a real Duo: boot, the 600-1400 MHz OPP table (`docs/opp-verify/`), real power-off to 0 W (`docs/pr-6-9-duo-adaptation-plan.md`, #6) and `reboot`.
+
 ## Board DTS
 
 `arch/arm64/boot/dts/realtek/rtd1296-wd-mycloud-home-duo.dts`, built on
