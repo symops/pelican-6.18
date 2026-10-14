@@ -33,7 +33,19 @@ don't assume #8 is "just unported."
 
 ## #6 (real power-off via audio-CPU IPC + PMIC sleep) -- needs board-specific work + real hardware
 
-**Not applied.** Plausible in principle (the underlying `rpc_comm` IPC
+**STATUS UPDATE: ported and hardware-confirmed.** Applied in commit
+`03eaa4df8` (+ console diagnostics in `747bc0612`); `shutdown -P` on a real
+Duo (booted from an eMMC firmware slot) now drops consumption to 0 W. What
+was done: `reg` entries for the watchdog and UART0, `memory-region =
+<&rpc_comm>` and `&rpc_comm { no-map; }` in the board DTS, and the driver
+as in Monarch's PR #6 without #8's misc-gpio. The PMIC rails go off through
+the g2227 regulator driver's `regulator-state-coldboot` states, so that
+driver (a module on Pelican) must be loaded. An earlier test build left the
+board at 2.6 W with identical logic; the cause of that one-off was not found
+(see the history of this branch). The original analysis below is kept for
+context.
+
+**Originally not applied.** Plausible in principle (the underlying `rpc_comm` IPC
 region is a SoC-level node in the shared `rtd129x.dtsi`, present on both
 boards identically), but requires work this repo's author cannot safely do
 blind, and the PR's own author has no Duo hardware to validate on.
