@@ -101,7 +101,18 @@ tested scope:
 
 Needs real Duo hardware access. Nobody has reported doing this.
 
-## #9b. OPP table -- infrastructure ported, voltage table unverified
+## #9b. OPP table -- infrastructure ported, voltage table VERIFIED on Duo
+
+**STATUS UPDATE (2026-10-14): verified on a real Duo (RTD1296)**, kernel
+6.18.56 with the PMIC drivers as modules, scripts in `docs/opp-verify/`:
+02 sweep up/down (all 5 OPPs reached, `cpudvs` within 5% of the DTS target
+at each, `ldo3` follows through coupling, spread <= 100 mV), 03 direct
+1400->600->1400 MHz jump, 04 five-minute 4-core compress+verify stress with
+1963 random OPP changes (0 data mismatches, 49-63 C), 05 real `schedutil`
+(1006+ transitions, no regulator/cpufreq errors in dmesg), 07 disk
+throughput at every OPP (no drop tied to an OPP). Not covered: the NFS
+variant of 07. The original analysis below is kept for context.
+
 
 The DTS/driver *infrastructure* from #9 (pinctrl-single I2C0 mux, PMIC
 regulator-coupling between `cpu_supp`/DC2 and `l2_supp`/LDO3, `cpu-supply`
