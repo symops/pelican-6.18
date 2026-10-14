@@ -47,8 +47,21 @@ board at 2.6 W with identical logic; the cause of that one-off was not found
 (`wd,misc-gpio-hdd-bits`): without it the board kept drawing power
 proportional to the number of disks fitted after `shutdown -P` (about 2.6 W
 with one disk, 3.9 W with two). Confirmed on hardware (build #208): with
-the bay supplies cut it powers off to 0 W with two disks fitted. The
-original analysis below is kept for context.
+the bay supplies cut it powers off to 0 W with two disks fitted. FINAL DESIGN (after many power-off cycles on a real Duo): the audio
+CPU's coolboot (PR #6 as ported) works in roughly 70% of cycles; in the rest its
+firmware is hung (it does not read the RPC flag, does not acknowledge the
+SB2 doorbell, and a restart of it crashes it) and the board stays at ~1.7 W
+until the mains is cut. So `wdmc-poweroff` now powers off from a
+`SYS_OFF_MODE_POWER_OFF_PREPARE` handler (after device_shutdown(), may sleep,
+interrupts on, so the normal I2C driver works): it quiesces the SoC's outputs,
+then writes the G2227's ONOFF register (0x05) with 0 over I2C, which removes
+every rail at once, 3.3 V and the ISO domain included: 0 W, and the board
+starts normally when power is applied again (confirmed). The audio CPU's
+coolboot is only the fallback when the PMIC is not reachable (its modules
+not loaded). Do NOT leave DC1/DC5 (3.3 V/ISO) on while cutting the rest
+(ONOFF = 0x88): without the isolation the audio CPU performs, the board
+drew ~4 W with the fan at full speed. The original analysis below is kept
+for context.
 
 **Originally not applied.** Plausible in principle (the underlying `rpc_comm` IPC
 region is a SoC-level node in the shared `rtd129x.dtsi`, present on both

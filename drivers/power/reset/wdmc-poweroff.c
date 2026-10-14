@@ -295,10 +295,17 @@ static bool wdmc_acpu_poweroff(struct wdmc_poweroff_data *d)
 }
 
 /*
- * Switch the rails off ourselves: the PMIC's ONOFF register holds one bit per
- * rail, so one byte written over I2C leaves only DC1 (3.3 V) and DC5 (ISO) on,
- * which is the state the audio CPU's coolboot ends in, without needing the
- * audio CPU (whose RPC loop, on real hardware, sometimes never answers).
+ * Switch every rail off through the PMIC. Its ONOFF register holds one bit per
+ * rail, so one byte written over I2C removes the power from the whole board,
+ * 3.3 V and the ISO domain included, at the same moment. Confirmed on a Duo:
+ * 0 W, and the board starts normally when power is applied again.
+ *
+ * Leaving the ISO domain (DC5) and 3.3 V (DC1) on while the rest collapses is
+ * NOT an alternative: tried on the same board it left it drawing ~4 W with the
+ * fan at full speed and the flash busy, because the isolation the audio CPU
+ * performs before its coolboot was missing.
+ *
+ * Returns only if the write failed, or if the board is somehow still running.
  */
 static void wdmc_pmic_cut(struct wdmc_poweroff_data *d)
 {
@@ -313,20 +320,20 @@ static void wdmc_pmic_cut(struct wdmc_poweroff_data *d)
 		return;
 	}
 	onoff = i2c_smbus_read_byte_data(pmic, G2227_REG_ONOFF);
-	pr_emerg("wdmc-poweroff: PMIC ONOFF=%02x: switching off every rail but DC1 (3.3 V) and DC5 (ISO)\n", onoff);
-	if (onoff >= 0) {
-		ret = i2c_smbus_write_byte_data(pmic, G2227_REG_ONOFF,
-						onoff & (G2227_DC1_ON_MASK | G2227_DC5_ON_MASK));
-		/* the SoC normally loses its core and DDR rails here */
-		mdelay(500);
-		pr_emerg("wdmc-poweroff: still running 0.5 s after the PMIC ONOFF write (ret=%d)\n", ret);
-	}
+	pr_emerg("wdmc-poweroff: PMIC ONOFF=%02x: switching every rail off\n", onoff);
+	ret = i2c_smbus_write_byte_data(pmic, G2227_REG_ONOFF, 0);
+	/* the board normally loses all power here */
+	mdelay(500);
+	pr_emerg("wdmc-poweroff: still running 0.5 s after the PMIC ONOFF write (ret=%d)\n", ret);
 	put_device(&pmic->dev);
 }
 
 /*
  * Runs after device_shutdown() (the disks are stopped) and may sleep, with
  * interrupts on, so the PMIC can be reached over its normal I2C driver.
+ * The audio CPU's coolboot is only the fallback: its RPC loop sometimes never
+ * runs on real hardware (it does not even acknowledge the SB2 doorbell) and
+ * the board then stays powered at ~1.7 W.
  */
 static int wdmc_poweroff_prepare(struct sys_off_data *sd)
 {
@@ -334,8 +341,8 @@ static int wdmc_poweroff_prepare(struct sys_off_data *sd)
 
 	d->prepare_ran = true;
 	wdmc_quiesce(d);
-	if (!wdmc_acpu_poweroff(d))
-		wdmc_pmic_cut(d);
+	wdmc_pmic_cut(d);
+	wdmc_acpu_poweroff(d);
 	return NOTIFY_DONE;
 }
 
