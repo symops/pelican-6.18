@@ -79,17 +79,6 @@
 #define WDMC_UART_MCR_AFCE	BIT(5)
 #define WDMC_UART_LSR_TEMT	BIT(6)
 
-/*
- * Diagnostics: is the audio CPU running at all? Its reset/clock bits in the
- * CRT (SOFT_RESET2 bit 0 released, CLOCK_ENABLE2 bit 4 on), and whether its
- * firmware image (loaded by U-Boot at 0x01b00000, the region U-Boot reserves)
- * is still changing -- its .bss counters tick many times a second.
- */
-#define WDMC_CRT_SOFT_RESET2	0x98000004
-#define WDMC_CRT_CLOCK_ENABLE2	0x98000010
-#define WDMC_ACPU_FW_BASE	0x01b00000
-#define WDMC_ACPU_FW_SIZE	0x004be000
-
 /* How many times the power-off request is sent (1 s each) if the audio CPU does not answer */
 #define WDMC_IPC_ATTEMPTS	3
 
@@ -107,9 +96,6 @@ struct wdmc_poweroff_data {
 	void __iomem *wdt_ctl;
 	void __iomem *uart;
 	void __iomem *ipc;
-	void __iomem *crt_reset2;
-	void __iomem *crt_clock2;
-	const u32 *acpu_fw;
 	struct device_node *pmic;
 	bool prepare_ran;
 	unsigned int pwm_channels[WDMC_MAX_PWM_CHANNELS];
@@ -117,82 +103,6 @@ struct wdmc_poweroff_data {
 };
 
 static struct wdmc_poweroff_data *wdmc_poweroff;
-
-/*
- * Variables of the audio firmware's RPC/power task (found by disassembling the
- * two images in the Duo firmware table, both big-endian MIPS linked at
- * 0x81b00000, loaded at 0x01b00000): the task runs every few ticks, reads the
- * request word at IPC+0xd0 (0xdaedXXXX arms it, 0xdeadXXXX asks for suspend)
- * and only calls its suspend routine when the "busy" word's bit 0 is clear.
- * The two builds differ in layout, so identify the one in memory first.
- */
-#define WDMC_FW_VBASE	0x81b00000
-
-static u32 wdmc_fw_word(const u32 *fw, u32 vaddr)
-{
-	return be32_to_cpu(READ_ONCE(fw[(vaddr - WDMC_FW_VBASE) / 4]));
-}
-
-static void wdmc_acpu_fw_vars(struct wdmc_poweroff_data *d, const char *when)
-{
-	const char *which = "unknown";
-	u32 state = 0, busy = 0, ptr = 0;
-
-	if (!d->acpu_fw)
-		return;
-	if (wdmc_fw_word(d->acpu_fw, 0x81b44274) == 0x3c02dead) {
-		which = "audio (913 KB)";
-		state = wdmc_fw_word(d->acpu_fw, 0x81be0ee0);
-		busy = wdmc_fw_word(d->acpu_fw, 0x81bd4b90);
-		ptr = wdmc_fw_word(d->acpu_fw, 0x81bd2e70);
-	} else if (wdmc_fw_word(d->acpu_fw, 0x81bc19c8) == 0x3c17dead) {
-		which = "gold (3.2 MB)";
-		state = wdmc_fw_word(d->acpu_fw, 0x81dbd158);
-		busy = wdmc_fw_word(d->acpu_fw, 0x81d59048);
-		ptr = wdmc_fw_word(d->acpu_fw, 0x81dca77c);
-	}
-	pr_emerg("wdmc-poweroff: ACPU fw (%s): %s: state=%08x busy=%08x (bit0=%u) ipcptr=%08x; ipc[0xd0]=%08x [0x114]=%08x [0x12c]=%08x [0x138]=%08x\n",
-		 when, which, state, busy, busy & 1, ptr,
-		 d->ipc ? ioread32be(d->ipc + 0xd0) : 0,
-		 d->ipc ? ioread32be(d->ipc + 0x114) : 0,
-		 d->ipc ? ioread32be(d->ipc + 0x12c) : 0,
-		 d->ipc ? ioread32be(d->ipc + 0x138) : 0);
-}
-
-static u32 wdmc_acpu_fw_sum(const u32 *fw)
-{
-	u32 sum = 0;
-	size_t i;
-
-	for (i = 0; i < WDMC_ACPU_FW_SIZE / 4; i++)
-		sum += READ_ONCE(fw[i]);
-	return sum;
-}
-
-/* Log the audio CPU's state; usable at probe time and from the power-off handler */
-static void wdmc_acpu_report(struct wdmc_poweroff_data *d, const char *when)
-{
-	u32 rst = d->crt_reset2 ? readl(d->crt_reset2) : 0xffffffff;
-	u32 clk = d->crt_clock2 ? readl(d->crt_clock2) : 0xffffffff;
-	u32 s1 = 0, s2 = 0;
-
-	if (d->acpu_fw) {
-		s1 = wdmc_acpu_fw_sum(d->acpu_fw);
-		mdelay(200);
-		s2 = wdmc_acpu_fw_sum(d->acpu_fw);
-	}
-	pr_emerg("wdmc-poweroff: ACPU (%s): soft_reset2=%08x (bit0=%u) clock_enable2=%08x (bit4=%u) fw sum %08x -> %08x in 200 ms: %s; ipc[0]=%08x ipc[0xc4]=%08x rpc=%08x\n",
-		 when, rst, rst & 1, clk, (clk >> 4) & 1, s1, s2,
-		 !d->acpu_fw ? "not sampled" : (s1 == s2 ? "STATIC (not running?)" : "changing (running)"),
-		 d->ipc ? ioread32be(d->ipc) : 0,
-		 d->ipc ? ioread32be(d->ipc + 0xc4) : 0,
-		 d->ipc ? ioread32be(d->ipc + WDMC_IPC_AUDIO_RPC_FLAG) : 0);
-	wdmc_acpu_fw_vars(d, when);
-	if (d->uart)
-		pr_emerg("wdmc-poweroff: UART0 (%s): lsr=%02x (thre=%u temt=%u) mcr=%02x\n", when,
-			 readl(d->uart + WDMC_UART_LSR), (readl(d->uart + WDMC_UART_LSR) >> 5) & 1,
-			 (readl(d->uart + WDMC_UART_LSR) >> 6) & 1, readl(d->uart + WDMC_UART_MCR));
-}
 
 /* What the SoC drives directly: LED/fan PWM, USB VBUS, the drive-bay supplies, the watchdog */
 static void wdmc_quiesce(struct wdmc_poweroff_data *d)
@@ -253,8 +163,6 @@ static bool wdmc_acpu_poweroff(struct wdmc_poweroff_data *d)
 		}
 		mcr = readl(uart + WDMC_UART_MCR);
 	}
-
-	wdmc_acpu_report(d, "before the power-off request");
 
 	/*
 	 * Suspend version 2, author SCPU, coolboot; the firmware clears the
@@ -427,16 +335,6 @@ static int wdmc_poweroff_probe(struct platform_device *pdev)
 		if (!data->ipc)
 			return dev_err_probe(dev, -ENOMEM, "cannot map memory-region\n");
 	}
-
-	/* Diagnostic views of the audio CPU's state (read-only) */
-	data->crt_reset2 = devm_ioremap(dev, WDMC_CRT_SOFT_RESET2, 4);
-	data->crt_clock2 = devm_ioremap(dev, WDMC_CRT_CLOCK_ENABLE2, 4);
-	data->acpu_fw = devm_memremap(dev, WDMC_ACPU_FW_BASE, WDMC_ACPU_FW_SIZE, MEMREMAP_WB);
-	if (IS_ERR(data->acpu_fw)) {
-		dev_warn(dev, "cannot map the ACPU firmware region: %ld\n", PTR_ERR(data->acpu_fw));
-		data->acpu_fw = NULL;
-	}
-	wdmc_acpu_report(data, "boot");
 
 	/*
 	 * GPIOD_ASIS: don't touch the line's current state at probe time
