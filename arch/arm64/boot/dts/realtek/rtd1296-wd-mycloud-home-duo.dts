@@ -148,7 +148,7 @@
 		#address-cells = <1>;
 		#size-cells = <0>;
 
-		pmic: pmic@12 {
+		pmic@12 {
 			compatible = "gmt,g2227";
 			reg = <0x12>;
 			status = "okay";
@@ -336,7 +336,7 @@
 		wd,usb-vbus-gpios = <&rtk_iso_gpio 34 GPIO_ACTIVE_HIGH>,
 				     <&rtk_iso_gpio 26 GPIO_ACTIVE_HIGH>;
 		memory-region = <&rpc_comm>;		/* IPC with the audio CPU */
-		wd,pmic = <&pmic>;			/* its ONOFF register cuts the rails if the audio CPU does not */
+		wd,pmic-sleep-gpios = <&rtk_iso_gpio 0 GPIO_ACTIVE_HIGH>;	/* PMIC sleep input, last-resort power cut */
 		status = "okay";
 	};
 
