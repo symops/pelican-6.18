@@ -92,6 +92,8 @@ so the board DTS uses the same `/memreserve/ 0x02200000 0x00C00000;` +
 
 The PMIC drivers (`PINCTRL_SINGLE`, `MFD_G2227_I2C`, `REGULATOR_G2227`) must be **modules** on this board -- built in, they bring back the CPU0 hang (layout-sensitive idle-loop nop workaround). The full recipe and the reason are in `BUILDING.md` ("Duo: required `.config` settings"). Verified on a real Duo: boot, the 600-1400 MHz OPP table (`docs/opp-verify/`), real power-off to 0 W (`docs/pr-6-9-duo-adaptation-plan.md`, #6) and `reboot`.
 
+Since v6.18.59 the release `default.config` also has `BPF_JIT=y` and CUBIC built in (`TCP_CONG_CUBIC=y`, `DEFAULT_TCP_CONG="cubic"`); they are described in the Progress log entry "`BPF_JIT` and CUBIC built in" below. `PHY_RTK_RTD_SATAPHY`, `USB_STORAGE` and `USB_UAS` stay **modules by design** (the rescue initramfs inserts exactly these by hand).
+
 ## Board DTS
 
 `arch/arm64/boot/dts/realtek/rtd1296-wd-mycloud-home-duo.dts`, built on
@@ -4594,6 +4596,74 @@ untouched.
 
 Rebased onto v6.18.55 the same way -- clean merge, no conflicts.
 Rebuilt and repackaged with `LOCALVERSION=` as usual.
+
+### Power-off: the PMIC cuts the rails (final design)
+
+**Supersedes the earlier power-off entries above** (the first port of the
+audio-CPU "suspend to coolboot" from symops/monarch-6.18 and the diagnostics
+added while chasing the remaining failures). On a real Duo the audio CPU's
+firmware hangs in about a third of the power-off cycles: it never reads the
+RPC flag, never acknowledges the SB2 doorbell (`SB2_INT` stays 2), the
+vendor sequence of the 4.9 kernel (`0xdaedffff` first, then `0xdeadffff` and
+the doorbell) makes no difference, and restarting the audio CPU crashes its
+firmware (`FATAL ... boot_info 0xffffffff`). The board then stays at ~1.7 W
+until the mains is cut. Nothing on the Linux side explains it: not clocks
+(`clk_ignore_unused`), not the I2C modules, not UART0 (idle), and the boot
+logs of good and bad cycles are textually identical.
+
+What works is to leave the audio CPU out of it. `wdmc-poweroff` powers off
+from a `SYS_OFF_MODE_POWER_OFF_PREPARE` handler, after `device_shutdown()`
+(the disks are stopped), in process context with interrupts on (which the
+interrupt-driven I2C driver needs), and writes 0 to the G2227's `ONOFF`
+register (0x05) over I2C: every rail, 3.3 V and the ISO domain included,
+goes off at once. **Confirmed on real hardware: 0 W, and the board starts
+normally when power is applied again**, on every tested cycle. The drive-bay
+supplies are still cut by the driver (`wd,misc-gpio-hdd-bits`), the audio
+CPU's coolboot is kept as the fallback when the PMIC cannot be reached (its
+modules are not loaded), and the diagnostics used to chase the hang were
+removed again.
+
+Leaving 3.3 V (DC1) and ISO (DC5) on while the rest collapses
+(`ONOFF = 0x88`) was tried and is **bad**: ~4 W, the fan at full speed and
+the flash busy, because the isolation the audio CPU performs before its
+coolboot is missing.
+
+### One power-off driver for both boards; USB VBUS raised at probe
+
+`drivers/power/reset/wdmc-poweroff.c`, the G2227 regulator driver and
+`rtd129x.dtsi` are now identical in this repository and in
+symops/monarch-6.18 (a comparison showed they had drifted apart without any
+board-specific reason): the Duo-only parts (drive-bay supplies) are optional
+properties, the sleep-mode writes of the regulator driver are verified and
+retried, the stale copy of the Monarch device tree here is replaced by the
+current one and its `.dtb` has its 16 KiB `DTC_FLAGS` headroom back. The
+unification briefly dropped Monarch's `GPIOD_OUT_HIGH` for `wd,usb-vbus`
+(this repository had `GPIOD_ASIS`); it is restored: U-Boot powers the USB
+ports only on its USB boot paths, so the lines are raised at probe. On the
+Duo they are already high by then, so nothing changes here.
+
+### `BPF_JIT` and CUBIC built in
+
+Suggested by qzydustin (symops/monarch-6.18 issue #10): `CONFIG_BPF_JIT=y`
+(built in only, about 19 KB, `BPF_JIT_DEFAULT_ON`), so Docker's seccomp
+filters and systemd's cgroup BPF programs run JIT-compiled, and
+`TCP_CONG_CUBIC=y` with `DEFAULT_TCP_CONG="cubic"`. The CPU0 idle workaround
+depends on the layout of the built-in code and +16 KB of built-in PMIC
+drivers already brought the hang back, so these two were tested on a Duo
+before the release: **confirmed working on real hardware** (v6.18.59). A
+future change of what is built in deserves the same check. `.config` is not
+tracked in git; it is the `default.config` attached to the release.
+
+### Base version bump: v6.18.55 -> v6.18.59
+
+v6.18.55 -> v6.18.56 and v6.18.56 -> v6.18.59 went in the same way, as
+single-parent "Merge upstream" commits made by a 3-way tree merge (the
+previous upstream tag as base): no conflicts with the board code; the only
+conflict was the stock top-level `README`, kept deleted. `olddefconfig` added
+the Kerberos symbols for the in-kernel SMB/NFS stack
+(`RPCSEC_GSS_KRB5_ENCTYPES_AES_SHA1=y`, `CRYPTO_KRB5`, `CRYPTO_KRB5ENC`,
+`CRYPTO_CTS`, `CRYPTO_CAMELLIA` as modules). Rebuilt and repackaged with
+`LOCALVERSION=`; the Duo device tree did not change (same `.dtb`).
 
 ## Not yet confirmed / not yet ported
 
